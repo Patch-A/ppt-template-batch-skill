@@ -1,11 +1,11 @@
-﻿# Buyer Board Rules
+# Buyer Board Rules
 
 ## Core workflow
 
 Use this production order:
 
 1. Input the buyer-board PPT template.
-2. Decompose the template into stable layout rules.
+2. Decompose the template into stable layout rules and save them as `layout-config.json`.
 3. Fill buyer text content.
 4. Apply logos and right-side official visuals.
 5. Export PPT and preview images.
@@ -42,6 +42,12 @@ Expected page elements:
 - Buyer logo above the table
 - Right-side website/project visual
 - Footer `AI慧展说明`
+
+## Config split
+
+- `layout-config.json` stores template structure, text shape indexes, table row mapping, and image-slot rules.
+- `buyers.json` stores buyer text fields plus `logo_path` and `site_image_path`.
+- The South Africa example is the current reference implementation of this split.
 
 ## Image sourcing rules
 
