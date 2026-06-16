@@ -1,0 +1,4 @@
+interface:
+  display_name: "Buyer Board Layout"
+  short_description: "Analyze templates, fill buyer content, and export PPT decks."
+  default_prompt: "Use $buyer-board-layout to analyze a buyer-board PPT template, map its layout rules, fill buyer content, and export a finished deck."
