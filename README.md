@@ -43,6 +43,13 @@ This version adds:
 - AI-generated fallback visuals when official imagery is unavailable
 - automatic Python fallback when PowerPoint COM is not available
 
+Right-side image selection now follows a strict priority:
+
+1. official product image or image with clear product elements
+2. official project or brand image
+3. official website screenshot
+4. AI-generated fallback only when public official imagery is unavailable or unusable
+
 ## One-click usage
 
 Example:
@@ -78,6 +85,19 @@ The script generates:
 - a final PPT with logos and visuals
 - slide preview PNG files when PowerPoint COM is available
 - a preview note when the Python fallback path is used
+
+## Example project
+
+This repo now includes a configuration-driven sample project at `examples/sa-power-transmission/`.
+
+It contains:
+
+- `buyers.json`: buyer content and image paths
+- `layout-config.json`: extracted placement and field mapping rules
+- `images/`: selected logo and right-side visual assets used by the sample
+- `self-check-notes.md`: review notes, fallback rationale, and next optimization ideas
+
+The latest refined deliverable produced from this sample is published as a release asset so users can compare the runnable pipeline with a finished output deck.
 
 ## Layout-config generator scaffold
 
