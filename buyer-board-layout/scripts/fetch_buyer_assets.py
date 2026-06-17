@@ -16,6 +16,23 @@ USER_AGENT = (
 )
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+PAGE_HINTS = [
+    "product",
+    "products",
+    "solution",
+    "solutions",
+    "application",
+    "applications",
+    "industry",
+    "industries",
+    "equipment",
+    "services",
+    "about",
+    "company",
+    "portfolio",
+    "project",
+    "projects",
+]
 PRODUCT_HINTS = [
     "product",
     "products",
@@ -32,7 +49,9 @@ PRODUCT_HINTS = [
     "solar",
     "wind",
     "mining",
+    "transmission",
 ]
+LOGO_HINTS = ["logo", "brand", "identity"]
 
 
 def load_json(path: Path) -> Any:
@@ -66,9 +85,10 @@ def fetch_url(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
 class AssetHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.meta_images: list[str] = []
-        self.link_icons: list[str] = []
-        self.images: list[str] = []
+        self.meta_images: list[dict[str, str]] = []
+        self.link_icons: list[dict[str, str]] = []
+        self.images: list[dict[str, str]] = []
+        self.links: list[dict[str, str]] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attrs_dict = {k.lower(): v for k, v in attrs}
@@ -77,45 +97,30 @@ class AssetHTMLParser(HTMLParser):
             prop = (attrs_dict.get("property") or attrs_dict.get("name") or "").lower()
             content = attrs_dict.get("content") or ""
             if prop in {"og:image", "twitter:image"} and content:
-                self.meta_images.append(content)
+                self.meta_images.append({"src": content, "kind": "meta"})
         elif tag == "link":
             rel = (attrs_dict.get("rel") or "").lower()
             href = attrs_dict.get("href") or ""
             if href and ("icon" in rel or "logo" in rel):
-                self.link_icons.append(href)
+                self.link_icons.append({"src": href, "kind": "icon", "rel": rel})
         elif tag == "img":
             src = attrs_dict.get("src") or attrs_dict.get("data-src") or ""
-            alt = (attrs_dict.get("alt") or "").lower()
-            cls = (attrs_dict.get("class") or "").lower()
+            alt = (attrs_dict.get("alt") or "")
+            cls = (attrs_dict.get("class") or "")
             if src:
-                score_prefix = ""
-                if "logo" in alt or "logo" in cls or "brand" in alt:
-                    score_prefix = "logo:"
-                elif any(hint in src.lower() or hint in alt or hint in cls for hint in PRODUCT_HINTS):
-                    score_prefix = "product:"
-                self.images.append(score_prefix + src)
-
-
-def parse_assets(base_url: str, html: str) -> tuple[list[str], list[str]]:
-    parser = AssetHTMLParser()
-    parser.feed(html)
-
-    logos: list[str] = []
-    visuals: list[str] = []
-
-    for src in parser.link_icons:
-        logos.append(urljoin(base_url, src))
-    for src in parser.images:
-        if src.startswith("logo:"):
-            logos.append(urljoin(base_url, src.split(":", 1)[1]))
-        elif src.startswith("product:"):
-            visuals.append(urljoin(base_url, src.split(":", 1)[1]))
-        else:
-            visuals.append(urljoin(base_url, src))
-    for src in parser.meta_images:
-        visuals.insert(0, urljoin(base_url, src))
-
-    return dedupe(logos), dedupe(visuals)
+                self.images.append(
+                    {
+                        "src": src,
+                        "alt": alt,
+                        "class": cls,
+                        "kind": "image",
+                    }
+                )
+        elif tag == "a":
+            href = attrs_dict.get("href") or ""
+            text_hint = (attrs_dict.get("title") or attrs_dict.get("aria-label") or "")
+            if href:
+                self.links.append({"href": href, "hint": text_hint})
 
 
 def dedupe(items: list[str]) -> list[str]:
@@ -162,7 +167,96 @@ def download_asset(url: str, output_path: Path) -> Path | None:
     return final_path
 
 
-def discover_assets_for_domain(domain: str) -> tuple[str | None, str | None, str | None]:
+def same_host(base_url: str, candidate_url: str) -> bool:
+    return urlparse(base_url).netloc.lower() == urlparse(candidate_url).netloc.lower()
+
+
+def score_logo_candidate(src: str, alt: str = "", cls: str = "", kind: str = "") -> int:
+    target = " ".join([src.lower(), alt.lower(), cls.lower(), kind.lower()])
+    score = 0
+    if any(hint in target for hint in LOGO_HINTS):
+        score += 12
+    if "icon" in target:
+        score += 4
+    if "header" in target or "navbar" in target:
+        score += 3
+    if src.lower().endswith(".svg"):
+        score += 2
+    return score
+
+
+def score_visual_candidate(src: str, alt: str = "", cls: str = "", kind: str = "", page_url: str = "") -> int:
+    target = " ".join([src.lower(), alt.lower(), cls.lower(), kind.lower(), page_url.lower()])
+    score = 0
+    if kind == "meta":
+        score += 8
+    if any(hint in target for hint in PRODUCT_HINTS):
+        score += 10
+    if "hero" in target or "banner" in target:
+        score += 4
+    if "thumbnail" in target or "thumb" in target or "avatar" in target:
+        score -= 6
+    if "logo" in target or "icon" in target:
+        score -= 10
+    return score
+
+
+def pick_candidate_page_urls(base_url: str, parser: AssetHTMLParser) -> list[str]:
+    candidates = []
+    for item in parser.links:
+        href = item["href"]
+        full = urljoin(base_url, href)
+        if not same_host(base_url, full):
+            continue
+        joined_hint = f"{href} {item.get('hint','')}".lower()
+        if any(hint in joined_hint for hint in PAGE_HINTS):
+            candidates.append(full)
+    return dedupe(candidates)[:6]
+
+
+def parse_page(base_url: str, html: str) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
+    parser = AssetHTMLParser()
+    parser.feed(html)
+
+    logo_candidates: list[dict[str, str]] = []
+    visual_candidates: list[dict[str, str]] = []
+
+    for item in parser.link_icons:
+        logo_candidates.append({**item, "src": urljoin(base_url, item["src"]), "page": base_url})
+    for item in parser.images:
+        full = urljoin(base_url, item["src"])
+        target = " ".join([item.get("src", ""), item.get("alt", ""), item.get("class", "")]).lower()
+        bucket = logo_candidates if any(hint in target for hint in LOGO_HINTS) else visual_candidates
+        bucket.append({**item, "src": full, "page": base_url})
+    for item in parser.meta_images:
+        visual_candidates.insert(0, {**item, "src": urljoin(base_url, item["src"]), "page": base_url})
+
+    page_urls = pick_candidate_page_urls(base_url, parser)
+    return logo_candidates, visual_candidates, page_urls
+
+
+def rank_logo_candidates(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    filtered = [item for item in items if has_supported_extension(item["src"])]
+    return sorted(
+        filtered,
+        key=lambda item: score_logo_candidate(item["src"], item.get("alt", ""), item.get("class", ""), item.get("kind", "")),
+        reverse=True,
+    )
+
+
+def rank_visual_candidates(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    filtered = [item for item in items if has_supported_extension(item["src"])]
+    return sorted(
+        filtered,
+        key=lambda item: score_visual_candidate(
+            item["src"], item.get("alt", ""), item.get("class", ""), item.get("kind", ""), item.get("page", "")
+        ),
+        reverse=True,
+    )
+
+
+def discover_assets_for_domain(domain: str) -> tuple[str | None, dict[str, str] | None, dict[str, str] | None, list[str]]:
+    notes: list[str] = []
     for base_url in candidate_base_urls(domain):
         try:
             final_url, body, content_type = fetch_url(base_url)
@@ -170,12 +264,35 @@ def discover_assets_for_domain(domain: str) -> tuple[str | None, str | None, str
             continue
         if not content_type.startswith("text/html"):
             continue
+
         html = body.decode("utf-8", errors="ignore")
-        logos, visuals = parse_assets(final_url, html)
-        logo = next((item for item in logos if has_supported_extension(item)), None)
-        visual = next((item for item in visuals if has_supported_extension(item)), None)
-        return final_url, logo, visual
-    return None, None, None
+        all_logo_candidates: list[dict[str, str]] = []
+        all_visual_candidates: list[dict[str, str]] = []
+
+        logos, visuals, page_urls = parse_page(final_url, html)
+        all_logo_candidates.extend(logos)
+        all_visual_candidates.extend(visuals)
+        notes.append(f"base:{final_url}")
+
+        for page_url in page_urls:
+            try:
+                page_final_url, page_body, page_content_type = fetch_url(page_url)
+            except Exception:
+                continue
+            if not page_content_type.startswith("text/html"):
+                continue
+            page_html = page_body.decode("utf-8", errors="ignore")
+            page_logos, page_visuals, _ = parse_page(page_final_url, page_html)
+            all_logo_candidates.extend(page_logos)
+            all_visual_candidates.extend(page_visuals)
+            notes.append(f"page:{page_final_url}")
+
+        ranked_logos = rank_logo_candidates(all_logo_candidates)
+        ranked_visuals = rank_visual_candidates(all_visual_candidates)
+        logo = ranked_logos[0] if ranked_logos else None
+        visual = ranked_visuals[0] if ranked_visuals else None
+        return final_url, logo, visual, notes
+    return None, None, None, notes
 
 
 def process_buyer(buyer: dict[str, Any], assets_dir: Path) -> dict[str, Any]:
@@ -184,35 +301,37 @@ def process_buyer(buyer: dict[str, Any], assets_dir: Path) -> dict[str, Any]:
         buyer["asset_fetch_notes"] = "No website available for asset fetch."
         return buyer
 
-    final_url, logo_url, visual_url = discover_assets_for_domain(website)
+    final_url, logo_candidate, visual_candidate, notes = discover_assets_for_domain(website)
     slug = slugify(str(buyer.get("name", "buyer")))
 
     logo_path = ""
     site_image_path = ""
-    notes: list[str] = []
+    trace = list(notes)
 
     if final_url:
-        notes.append(f"base:{final_url}")
+        trace.append(f"resolved:{final_url}")
 
-    if logo_url:
-        downloaded = download_asset(logo_url, assets_dir / f"{slug}-logo")
+    if logo_candidate:
+        downloaded = download_asset(logo_candidate["src"], assets_dir / f"{slug}-logo")
         if downloaded:
             logo_path = str(downloaded)
-            notes.append(f"logo:{logo_url}")
-    if visual_url:
-        downloaded = download_asset(visual_url, assets_dir / f"{slug}-site")
+            trace.append(f"logo:{logo_candidate['src']}")
+            trace.append(f"logo_page:{logo_candidate.get('page','')}")
+    if visual_candidate:
+        downloaded = download_asset(visual_candidate["src"], assets_dir / f"{slug}-site")
         if downloaded:
             site_image_path = str(downloaded)
-            notes.append(f"site:{visual_url}")
+            trace.append(f"site:{visual_candidate['src']}")
+            trace.append(f"site_page:{visual_candidate.get('page','')}")
 
     if not logo_path:
-        notes.append("logo:missing")
+        trace.append("logo:missing")
     if not site_image_path:
-        notes.append("site:missing")
+        trace.append("site:missing")
 
     buyer["logo_path"] = logo_path
     buyer["site_image_path"] = site_image_path
-    buyer["asset_fetch_notes"] = "; ".join(notes)
+    buyer["asset_fetch_notes"] = "; ".join(trace)
     return buyer
 
 
