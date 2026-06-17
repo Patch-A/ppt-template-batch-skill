@@ -86,18 +86,16 @@ The script generates:
 - slide preview PNG files when PowerPoint COM is available
 - a preview note when the Python fallback path is used
 
-## Example project
+## Privacy note
 
-This repo now includes a configuration-driven sample project at `examples/sa-power-transmission/`.
+Do not publish client-specific finished decks, private sample projects, or generated preview outputs in the public repo or release assets.
 
-It contains:
+When sharing this skill publicly, prefer:
 
-- `buyers.json`: buyer content and image paths
-- `layout-config.json`: extracted placement and field mapping rules
-- `images/`: selected logo and right-side visual assets used by the sample
-- `self-check-notes.md`: review notes, fallback rationale, and next optimization ideas
-
-The latest refined deliverable produced from this sample is published as a release asset so users can compare the runnable pipeline with a finished output deck.
+- blank or redacted templates
+- generic `layout-config.json` samples
+- sanitized `buyers.json` examples
+- documentation of the workflow rather than real customer deliverables
 
 ## Layout-config generator scaffold
 
