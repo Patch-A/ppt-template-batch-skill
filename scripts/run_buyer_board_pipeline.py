@@ -114,7 +114,12 @@ def generate_buyers_from_research(args: argparse.Namespace, skill_root: Path, wo
     return output_json
 
 
-def enrich_buyer_assets(skill_root: Path, buyers_path: Path, workspace: Path) -> Path:
+def enrich_buyer_assets(
+    skill_root: Path,
+    buyers_path: Path,
+    workspace: Path,
+    enable_ai_visual_fallback: bool,
+) -> Path:
     output_json = workspace / "buyers.with-assets.json"
     assets_dir = workspace / "assets"
     cache_file = workspace / "asset-cache.json"
@@ -133,6 +138,8 @@ def enrich_buyer_assets(skill_root: Path, buyers_path: Path, workspace: Path) ->
         "--report-file",
         str(report_file),
     ]
+    if enable_ai_visual_fallback:
+        cmd.append("--enable-ai-visual-fallback")
     try:
         run(cmd)
         return output_json
@@ -177,6 +184,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cover-country", help="Optional cover country override")
     parser.add_argument("--content-title", help="Optional content title override")
     parser.add_argument("--openai-model", help="Optional OpenAI model override for research mode")
+    parser.add_argument(
+        "--enable-ai-visual-fallback",
+        action="store_true",
+        help="Generate AI right-side visuals when public assets are unavailable",
+    )
     args = parser.parse_args()
 
     auto_mode = bool(args.country and args.procurement_need)
@@ -198,7 +210,7 @@ def main() -> int:
 
     buyers_path = Path(args.buyers) if args.buyers else generate_buyers_from_research(args, skill_root, workspace)
     if not args.buyers:
-        buyers_path = enrich_buyer_assets(skill_root, buyers_path, workspace)
+        buyers_path = enrich_buyer_assets(skill_root, buyers_path, workspace, args.enable_ai_visual_fallback)
     layout_config = ensure_layout_config(args, skill_root, workspace)
     text_draft = workspace / "text-draft.pptx"
     copied_buyers = copy_assets_to_workspace(buyers_path, workspace)
