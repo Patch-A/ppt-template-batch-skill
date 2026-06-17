@@ -19,9 +19,10 @@ Expected production sequence:
 1. Input the PPT template or manually adjusted reference deck.
 2. Generate or refine `layout-config.json`.
 3. Either load existing `buyers.json` or research buyer profiles from `country + procurement need`.
-4. Fill buyer text fields into the approved template.
-5. Place logos and right-side visuals when assets are available.
-6. Export final PPT and previews when the environment supports them.
+4. Try to fetch public buyer logo and website visuals.
+5. Fill buyer text fields into the approved template.
+6. Place logos and right-side visuals when assets are available.
+7. Export final PPT and previews when the environment supports them.
 
 ## Workflow
 
@@ -68,6 +69,12 @@ If `buyers.json` is missing, use `scripts/discover_buyer_profiles.py` to generat
 - `country`
 - `procurement need`
 - optional `buyer_count`
+
+After buyer data is generated, use `scripts/fetch_buyer_assets.py` to try to fetch:
+
+- official logo assets
+- favicon or header-brand assets
+- right-side public visuals from `og:image` or product-like page images
 
 Rules for auto-research mode:
 
@@ -149,6 +156,8 @@ After export, inspect previews and check:
   Use when the user only provides country and procurement need and Codex must generate buyer data first.
 - `scripts/fill_buyer_board_text.py`
   Use when generating the text-only PPT layer from a template, structured buyer data, and `layout-config.json`.
+- `scripts/fetch_buyer_assets.py`
+  Use after buyer research when Codex should try to source public buyer logos and right-side visuals automatically.
 - `scripts/apply_buyer_board_images.ps1`
   Use when replacing logo and right-side image assets in the PPT and exporting slide previews through PowerPoint COM.
 - `scripts/apply_buyer_board_images_fallback.py`
