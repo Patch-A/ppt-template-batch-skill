@@ -6,9 +6,10 @@ Use this production order:
 
 1. Input the buyer-board PPT template.
 2. Decompose the template into stable layout rules and save them as `layout-config.json`.
-3. Fill buyer text content.
-4. Apply logos and right-side official visuals.
-5. Export PPT and preview images.
+3. If needed, research buyers from `country + procurement need`.
+4. Fill buyer text content.
+5. Apply logos and right-side official visuals when assets are available.
+6. Export PPT and preview images.
 
 ## Non-negotiable template rules
 
@@ -21,7 +22,7 @@ Use this production order:
 
 - Content title: white.
 - Body text: blue near `#2A49F4`.
-- Preferred Chinese font: `微软雅黑`.
+- Preferred Chinese font: `Microsoft YaHei`.
 - Default body size: `16 pt`.
 - Avoid shrinking text excessively to force fit.
 
@@ -37,17 +38,34 @@ Expected left table fields:
 
 Expected page elements:
 
-- Top title bar
-- Left-side buyer table
-- Buyer logo above the table
-- Right-side website/project visual
-- Footer `AI慧展说明`
+- top title bar
+- left-side buyer table
+- buyer logo above the table
+- right-side website or project visual
+- footer `AI慧展说明`
 
 ## Config split
 
 - `layout-config.json` stores template structure, text shape indexes, table row mapping, and image-slot rules.
 - `buyers.json` stores buyer text fields plus `logo_path` and `site_image_path`.
-- The South Africa example is the current reference implementation of this split.
+- In auto mode, buyer images may be temporarily blank while text content is still generated.
+
+## Auto-research rules
+
+When the user only provides:
+
+- `country`
+- `procurement need`
+
+The workflow should generate `buyers.json` first.
+
+Research rules:
+
+1. Prefer real companies with official sites.
+2. Prefer actual buyers, distributors, project developers, integrators, manufacturers, or large procurement entities.
+3. Generate a 120-Chinese-character bio for each buyer.
+4. Normalize the website to domain only.
+5. Leave image paths empty when no verified asset is available.
 
 ## Image sourcing rules
 
@@ -55,45 +73,47 @@ Expected page elements:
 
 Preferred order:
 
-1. Official logo file.
-2. Precise crop from official header or brand area.
-3. User-approved manual crop.
+1. official logo file
+2. precise crop from official header or brand area
+3. user-approved manual crop
 
 Placement rule:
 
-- Align the logo to the left edge of the approved logo box so it lines up with the text table below.
-- Prefer preserving legibility over maximizing size; trim obvious empty borders before placement when possible.
+- align the logo to the left edge of the approved logo box so it lines up with the text table below
+- prefer preserving legibility over maximizing size
 
 Forbidden:
 
-- Cropping logo from the right-side image
-- Random page screenshots
-- Reusing one crop for both logo and website image
+- cropping logo from the right-side image
+- random page screenshots
+- reusing one crop for both logo and website image
 
 ### Right-side image
 
 Preferred order:
 
-1. Official product image or official image with clear product elements
-2. Official project, solution, or brand image
-3. Official website screenshot
+1. official product image or official image with clear product elements
+2. official project, solution, or brand image
+3. official website screenshot
 4. AI-generated industry-matched visual only when official sources are unavailable or unusable
 
 Fit rule:
 
-- Crop to the target frame aspect ratio before placement.
-- Fill the right-side box without overflowing into the table or footer area.
-- Reject candidates that become unreadable or visually broken after cropping.
+- crop to the target frame aspect ratio before placement
+- fill the right-side box without overflowing into the table or footer area
+- reject candidates that become unreadable or visually broken after cropping
 
-Avoid decorative art that does not represent the buyer's actual business.
+If no asset is available:
+
+- remove the placeholder image
+- do not leave the old template graphic on the slide
 
 ## Validation checklist
 
-- Does the title match the approved style?
-- Is the table text blue and readable?
-- Is the logo authentic and legible?
-- Is the logo left-aligned with the table block?
-- Is the right-side image visually filled and balanced?
-- Was the right-side image chosen from product-first sources before falling back to screenshots?
-- Are there leftover template graphics after logo replacement?
-- Was the text-only draft used as input, rather than a previously exported final deck?
+- does the title match the approved style
+- is the table text blue and readable
+- is the logo authentic and legible when present
+- is the logo left-aligned with the table block
+- is the right-side image visually filled and balanced when present
+- were placeholder graphics removed when no image asset was available
+- was the text-only draft used as input, rather than a previously exported final deck
