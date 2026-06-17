@@ -8,6 +8,50 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-PythonExecutable {
+    $command = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+    $fallback = "C:\Users\root\AppData\Local\Programs\Python\Python312\python.exe"
+    if (Test-Path -LiteralPath $fallback) {
+        return $fallback
+    }
+    throw "Python executable not found. It is required for image preprocessing."
+}
+
+function Prepare-ImageAsset {
+    param(
+        [string]$ImagePath,
+        [ValidateSet("logo", "site")][string]$Kind,
+        [double]$TargetWidth = 0,
+        [double]$TargetHeight = 0
+    )
+
+    $pythonExe = Get-PythonExecutable
+    $scriptPath = Join-Path $PSScriptRoot "prepare_layout_image.py"
+    $arguments = @(
+        $scriptPath,
+        "--input",
+        $ImagePath,
+        "--kind",
+        $Kind
+    )
+    if ($Kind -eq "site") {
+        $arguments += @(
+            "--target-width",
+            [string][int][Math]::Round($TargetWidth),
+            "--target-height",
+            [string][int][Math]::Round($TargetHeight)
+        )
+    }
+    $output = & $pythonExe @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Image preprocessing failed for $ImagePath"
+    }
+    return ($output | Select-Object -Last 1).Trim()
+}
+
 function Get-ShapeAtPosition {
     param(
         $Slide,
@@ -80,8 +124,13 @@ function Replace-PictureShape {
     $height = $Target.Height
     $zOrder = $Target.ZOrderPosition
 
+    $preparedImagePath = $ImagePath
+    if ($FillBox) {
+        $preparedImagePath = Prepare-ImageAsset -ImagePath $ImagePath -Kind "site" -TargetWidth $width -TargetHeight $height
+    }
+
     $Target.Delete()
-    $newShape = $Slide.Shapes.AddPicture($ImagePath, $false, $true, $left, $top, -1, -1)
+    $newShape = $Slide.Shapes.AddPicture($preparedImagePath, $false, $true, $left, $top, -1, -1)
     if ($FillBox) {
         Fill-PictureIntoBox -Shape $newShape -BoxLeft $left -BoxTop $top -BoxWidth $width -BoxHeight $height
     }
@@ -119,7 +168,8 @@ function Add-LogoPicture {
         throw "Missing image asset: $ImagePath"
     }
 
-    $shape = $Slide.Shapes.AddPicture($ImagePath, $false, $true, $Left, $Top, -1, -1)
+    $preparedImagePath = Prepare-ImageAsset -ImagePath $ImagePath -Kind "logo"
+    $shape = $Slide.Shapes.AddPicture($preparedImagePath, $false, $true, $Left, $Top, -1, -1)
     Fit-PictureIntoBox -Shape $shape -BoxLeft $Left -BoxTop $Top -BoxWidth $Width -BoxHeight $Height
 }
 
