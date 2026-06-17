@@ -89,25 +89,45 @@ def main() -> int:
         text_cmd.extend(["--content-title", args.content_title])
     run(text_cmd)
 
-    run(
-        [
-            "powershell",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(skill_root / "scripts" / "apply_buyer_board_images.ps1"),
-            "-InputPpt",
-            str(text_draft),
-            "-BuyersJson",
-            str(copied_buyers),
-            "-LayoutConfigJson",
-            args.layout_config,
-            "-OutputPpt",
-            args.output,
-            "-PreviewDir",
-            args.preview_dir,
-        ]
-    )
+    image_cmd = [
+        "powershell",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(skill_root / "scripts" / "apply_buyer_board_images.ps1"),
+        "-InputPpt",
+        str(text_draft),
+        "-BuyersJson",
+        str(copied_buyers),
+        "-LayoutConfigJson",
+        args.layout_config,
+        "-OutputPpt",
+        args.output,
+        "-PreviewDir",
+        args.preview_dir,
+    ]
+    try:
+        run(image_cmd)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "REGDB_E_CLASSNOTREG" not in message and "NoCOMClassIdentified" not in message:
+            raise
+        run(
+            [
+                sys.executable,
+                str(skill_root / "scripts" / "apply_buyer_board_images_fallback.py"),
+                "--input-ppt",
+                str(text_draft),
+                "--buyers-json",
+                str(copied_buyers),
+                "--layout-config",
+                args.layout_config,
+                "--output-ppt",
+                args.output,
+                "--preview-dir",
+                args.preview_dir,
+            ]
+        )
 
     print(args.output)
     print(args.preview_dir)
