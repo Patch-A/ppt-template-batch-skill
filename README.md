@@ -15,7 +15,8 @@ This repository already supports:
 - layout-config scaffold generation from a reference PPT
 - structured buyer text filling
 - separate logo and site-image placement
-- preview export
+- PowerPoint COM image placement with preview export
+- Python fallback image placement when PowerPoint COM is unavailable
 - one-click pipeline execution
 
 It is currently strongest when used with:
@@ -31,6 +32,16 @@ The workflow is now:
 3. Prepare `buyers.json`
 4. Run the one-click pipeline
 5. Inspect exported PPT and preview PNGs
+
+## V3 updates
+
+This version adds:
+
+- left-aligned logo placement that matches the table block
+- product-first right-image selection guidance
+- crop-to-frame right-image fitting instead of overflow-prone scaling
+- AI-generated fallback visuals when official imagery is unavailable
+- automatic Python fallback when PowerPoint COM is not available
 
 ## One-click usage
 
@@ -65,7 +76,8 @@ The script generates:
 
 - a text draft PPT
 - a final PPT with logos and visuals
-- slide preview PNG files
+- slide preview PNG files when PowerPoint COM is available
+- a preview note when the Python fallback path is used
 
 ## Layout-config generator scaffold
 
