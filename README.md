@@ -15,6 +15,7 @@ This repository now supports:
 - layout-config scaffold generation from a reference PPT
 - structured buyer text filling
 - country + procurement-need driven buyer research
+- public website driven buyer asset fetching
 - separate logo and site-image placement
 - PowerPoint COM image placement with preview export
 - Python fallback image placement when PowerPoint COM is unavailable
@@ -38,9 +39,10 @@ The pipeline will:
 
 1. generate `layout-config.json` if you do not provide one
 2. research buyers and generate `buyers.json`
-3. fill the PPT
-4. place verified image assets when available
-5. remove placeholder images when assets are unavailable
+3. try to fetch official public logo and right-side visuals from each buyer website
+4. fill the PPT
+5. place verified image assets when available
+6. remove placeholder images when assets are unavailable
 
 ## Dependencies for auto-research mode
 
@@ -111,7 +113,7 @@ It can also continue the PPT pipeline even when no verified logo or right-side i
 Current limitation:
 
 - public buyer text research is automated
-- image asset sourcing is still semi-automatic
+- public website asset fetching is automatic but best-effort
 - when no verified image is available, the workflow clears placeholder graphics instead of inventing a risky fake logo
 - if a logo asset is SVG, the Python fallback path still requires a working cairo runtime in addition to `cairosvg`
 
