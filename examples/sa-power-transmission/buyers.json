@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Bearing Man Group (BMG)",
+    "country": "南非",
+    "website": "www.bmgworld.net",
+    "products": "NSK/Timken轴承、Nord减速机、电机、传动带、链条、联轴器、液压设备、气动设备、输送带系统",
+    "bio": "南非及非洲领先的轴承、密封件与动力传动分销商，1962年成立，总部位于约翰内斯堡，在德班、开普敦等地设有服务中心。公司长期代理NSK、Timken、Nord、Gates等国际品牌，覆盖轴承、减速机、电机、输送带及液压设备，是南非矿业、制造与能源行业的重要采购与分销平台。",
+    "logo_path": "./images/bmg-logo-svg-shot.png",
+    "site_image_path": "./images/bmg-geared-products.webp"
+  },
+  {
+    "name": "STM South Africa",
+    "country": "南非",
+    "website": "www.stmsa.co.za",
+    "products": "Tramec齿轮箱、SUPROR齿轮箱、MEC齿轮箱、IE3铸铁电机、铝壳三相电机、直角齿轮减速机、平行轴齿轮减速机、刹车电机、液压传动设备",
+    "bio": "南非领先的电机、齿轮箱与传动解决方案供应商，也是非洲大型电机和齿轮箱进口商之一。公司代理Tramec、SUPROR并生产自有MEC齿轮箱，服务矿业、输送、食品饮料、造纸、石化和可再生能源等行业，具备安装、调试、维保等完整售后能力。",
+    "logo_path": "./images/stm-south-africa-candidate-2.png",
+    "site_image_path": "./images/stm-site-shot.png"
+  },
+  {
+    "name": "Crofts Gears",
+    "country": "南非",
+    "website": "croftsgears.co.za",
+    "products": "工业齿轮箱、联轴器、工程链条、Renold链条、减速机维修和再制造、传动系统集成",
+    "bio": "南非本地领先的工业齿轮箱、联轴器和工程链条制造商与供应商，1950年成立，长期服务矿山、水泥、钢铁、糖业、造纸和水处理等行业。公司专注本地制造、维修与再制造，同时是Renold在南部非洲的重要代理，具备较强定制化传动系统配套能力。",
+    "logo_path": "./images/crofts-gears-candidate-2.webp",
+    "site_image_path": "./images/crofts-site-shot.png"
+  },
+  {
+    "name": "Anglo American South Africa",
+    "country": "南非",
+    "website": "www.angloamerican.com",
+    "products": "大型电机、齿轮减速机、联轴器、输送机传动系统、轴承、链条、传动轴、提升设备、液压传动系统",
+    "bio": "全球大型多元化矿业集团在南非的重要运营主体，运营铂族金属、铁矿石等多个世界级项目。采矿流程中的破碎、磨矿、输送与提升环节，对大型电机、减速机、联轴器、轴承和液压传动系统需求持续稳定，并持续推进自动化与数字化升级。",
+    "logo_path": "./images/anglo-logo-crop.png",
+    "site_image_path": "./images/anglo-home-banner.jpg"
+  },
+  {
+    "name": "BHP Billiton South Africa (Khumani铁矿)",
+    "country": "南非",
+    "website": "www.bhp.com",
+    "products": "大型电机、齿轮减速机、联轴器、输送机传动系统、重型轴承、传动链条、传动轴、液压传动设备",
+    "bio": "全球大型矿业集团，若按用户提供的Khumani铁矿场景理解，其铁矿石开采、筛分、输送和供水系统对重型动力传动设备需求较强，重点涉及大型电机、减速机、联轴器、重型轴承、传动链条和液压系统，适合作为矿业传动设备方向的重点跟进对象。",
+    "logo_path": "./images/bhp-placeholder-logo.png",
+    "site_image_path": "./images/bhp-ai-site.png"
+  }
+]
