@@ -16,6 +16,7 @@ This repository now supports:
 - structured buyer text filling
 - country + procurement-need driven buyer research
 - public website driven buyer asset fetching
+- multi-page official-site asset discovery and ranking
 - separate logo and site-image placement
 - PowerPoint COM image placement with preview export
 - Python fallback image placement when PowerPoint COM is unavailable
@@ -114,6 +115,7 @@ Current limitation:
 
 - public buyer text research is automated
 - public website asset fetching is automatic but best-effort
+- V4.2 now expands from the homepage into a small set of official product, solution, about, project, and company pages before ranking candidates
 - when no verified image is available, the workflow clears placeholder graphics instead of inventing a risky fake logo
 - if a logo asset is SVG, the Python fallback path still requires a working cairo runtime in addition to `cairosvg`
 
