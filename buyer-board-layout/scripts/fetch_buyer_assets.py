@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image
 
+from env_utils import get_env_var
 from image_layout_utils import prepare_site_image
 
 
@@ -107,10 +108,46 @@ def candidate_base_urls(domain: str) -> list[str]:
 
 def fetch_url(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout) as response:
-        content_type = response.headers.get_content_type()
-        final_url = response.geturl()
-        body = response.read()
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            content_type = response.headers.get_content_type()
+            final_url = response.geturl()
+            body = response.read()
+        return final_url, body, content_type
+    except Exception:
+        if not get_env_var("BUYER_BOARD_ENABLE_CURL_FALLBACK"):
+            raise
+        return fetch_url_with_curl(url, timeout)
+
+
+def fetch_url_with_curl(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "curl",
+            "-L",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            str(timeout),
+            "-A",
+            USER_AGENT,
+            "-w",
+            "\n%{url_effective}\n%{content_type}",
+            url,
+        ],
+        capture_output=True,
+        timeout=timeout + 5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+    chunks = result.stdout.split(b"\n")
+    if len(chunks) < 3:
+        raise RuntimeError("curl response did not include metadata")
+    content_type = chunks[-1].decode("utf-8", errors="replace").split(";")[0].strip() or "application/octet-stream"
+    final_url = chunks[-2].decode("utf-8", errors="replace").strip() or url
+    body = b"\n".join(chunks[:-2])
     return final_url, body, content_type
 
 
@@ -452,7 +489,7 @@ def save_cache(cache_path: Path, payload: dict[str, Any]) -> None:
 def maybe_generate_ai_visual(buyer: dict[str, Any], assets_dir: Path, enabled: bool) -> tuple[str, str]:
     if not enabled:
         return "", "ai_fallback_skipped:disabled"
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = get_env_var("OPENAI_API_KEY")
     if not api_key:
         return "", "ai_fallback_skipped:no_api_key"
 
