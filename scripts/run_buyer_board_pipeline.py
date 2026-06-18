@@ -132,6 +132,8 @@ def enrich_buyer_assets(
     buyers_path: Path,
     workspace: Path,
     enable_ai_visual_fallback: bool,
+    asset_mode: str,
+    browser_timeout_ms: int,
 ) -> Path:
     output_json = workspace / "buyers.with-assets.json"
     assets_dir = workspace / "assets"
@@ -153,6 +155,10 @@ def enrich_buyer_assets(
     ]
     if enable_ai_visual_fallback:
         cmd.append("--enable-ai-visual-fallback")
+    if asset_mode:
+        cmd.extend(["--asset-mode", asset_mode])
+    if browser_timeout_ms:
+        cmd.extend(["--browser-timeout-ms", str(browser_timeout_ms)])
     try:
         run(cmd)
         return output_json
@@ -198,6 +204,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--content-title", help="Optional content title override")
     parser.add_argument("--openai-model", help="Optional OpenAI model override for research mode")
     parser.add_argument(
+        "--asset-mode",
+        choices=("light", "auto", "browser"),
+        default="light",
+        help="Asset fetch mode: light for HTML-only, auto for HTML plus Playwright fallback, browser for Playwright-first fetching",
+    )
+    parser.add_argument(
+        "--browser-timeout-ms",
+        type=int,
+        default=18000,
+        help="Per-page Playwright timeout in milliseconds for browser-enhanced asset fetch modes",
+    )
+    parser.add_argument(
         "--enable-ai-visual-fallback",
         action="store_true",
         help="Generate AI right-side visuals when public assets are unavailable",
@@ -229,7 +247,14 @@ def main() -> int:
         print(str(exc).split("STDERR:")[-1].strip() or str(exc), file=sys.stderr)
         return 2
     if not args.buyers:
-        buyers_path = enrich_buyer_assets(skill_root, buyers_path, workspace, args.enable_ai_visual_fallback)
+        buyers_path = enrich_buyer_assets(
+            skill_root,
+            buyers_path,
+            workspace,
+            args.enable_ai_visual_fallback,
+            args.asset_mode,
+            args.browser_timeout_ms,
+        )
     layout_config = ensure_layout_config(args, skill_root, workspace)
     text_draft = workspace / "text-draft.pptx"
     copied_buyers = copy_assets_to_workspace(buyers_path, workspace)
