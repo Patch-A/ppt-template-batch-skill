@@ -2,3 +2,4 @@ openai
 python-pptx
 Pillow
 cairosvg
+playwright
