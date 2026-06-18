@@ -36,6 +36,19 @@ def run(cmd: list[str]) -> None:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
 
 
+def write_failure_report(workspace: Path, stage: str, exc: Exception) -> None:
+    payload = {
+        "stage": stage,
+        "error_type": exc.__class__.__name__,
+        "error": str(exc),
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "pipeline_failure.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8-sig",
+    )
+
+
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
@@ -208,7 +221,11 @@ def main() -> int:
     workspace = Path(args.workspace)
     workspace.mkdir(parents=True, exist_ok=True)
 
-    buyers_path = Path(args.buyers) if args.buyers else generate_buyers_from_research(args, skill_root, workspace)
+    try:
+        buyers_path = Path(args.buyers) if args.buyers else generate_buyers_from_research(args, skill_root, workspace)
+    except Exception as exc:
+        write_failure_report(workspace, "buyer_research", exc)
+        raise
     if not args.buyers:
         buyers_path = enrich_buyer_assets(skill_root, buyers_path, workspace, args.enable_ai_visual_fallback)
     layout_config = ensure_layout_config(args, skill_root, workspace)
