@@ -97,8 +97,16 @@ Asset-sourcing refinements:
 - filter candidates by file size, image dimensions, and aspect ratio
 - cache per-site asset fetch results so repeated runs do not refetch the same domain
 - write a per-buyer sourcing summary to `asset_fetch_report.json`
+- support `asset-mode` choices so lightweight HTML-only fetching remains available and Playwright-enhanced rendered-page fetching can be enabled only when needed
 - optionally generate an AI right-side visual when public assets still fail and the user enables the fallback
 - optionally use `BUYER_BOARD_ENABLE_CURL_FALLBACK=1` when Python `urllib` is blocked but curl works
+
+Runtime guidance:
+
+- prefer `asset-mode=light` for lowest dependency weight and fastest public release usability
+- prefer `asset-mode=auto` when the user wants better logo and right-side image hit rates without forcing browser rendering for every buyer
+- use `asset-mode=browser` only when dynamic sites are common and the environment already has Playwright plus Chromium installed
+- browser-enhanced asset fetch improves rendered DOM coverage but increases local runtime and dependency weight rather than OpenAI token usage
 
 ### 5. Fill text first
 
@@ -154,6 +162,7 @@ It supports:
 - `country + procurement need` auto-research mode
 - auto-generated `layout-config.json` when the user only supplies a template
 - workspace-level `asset-cache.json` and `asset_fetch_report.json` outputs
+- lightweight, auto-fallback, and Playwright-first asset fetch modes
 - optional `--enable-ai-visual-fallback` for right-side visual generation
 
 ### 8. Diagnose WorkBuddy or Windows issues
@@ -166,6 +175,7 @@ Use the report to check:
 
 - whether `OPENAI_API_KEY` is visible to the current runner
 - whether required Python modules are installed
+- whether Playwright and Chromium can launch for browser-enhanced asset fetch
 - whether public website requests are allowed
 - whether PowerPoint COM automation is available
 
