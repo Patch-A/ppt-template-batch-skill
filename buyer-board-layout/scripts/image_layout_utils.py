@@ -175,11 +175,35 @@ def prepare_site_image(image_path: Path, temp_dir: Path, target_width: int, targ
     )
 
 
-def prepare_logo_image(image_path: Path, temp_dir: Path) -> PreparedAsset:
+def prepare_logo_image(
+    image_path: Path,
+    temp_dir: Path,
+    target_width: int | None = None,
+    target_height: int | None = None,
+) -> PreparedAsset:
     normalized = normalize_image(image_path, temp_dir)
     image = Image.open(normalized)
     trimmed = trim_uniform_border(image)
     out = temp_dir / f"{image_path.stem}-logo-prepared.png"
+
+    if target_width and target_height:
+        target_ratio = target_width / target_height
+        canvas_width = TARGET_RENDER_WIDTH
+        canvas_height = max(1, int(round(canvas_width / target_ratio)))
+        canvas = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 0))
+        source = trimmed.convert("RGBA")
+        fitted_width, fitted_height = fit_size(source.width, source.height, canvas_width, int(canvas_height * 0.9))
+        fitted = source.resize((fitted_width, fitted_height), Image.Resampling.LANCZOS)
+        canvas.paste(fitted, (0, (canvas_height - fitted_height) // 2), fitted)
+        canvas.save(out, "PNG")
+        return PreparedAsset(
+            output_path=out,
+            mode="logo_canvas_fit",
+            retention=1.0,
+            upscale=round(max(fitted_width / source.width, fitted_height / source.height), 3),
+            notes="logo fitted into target slot aspect without distortion",
+        )
+
     trimmed.save(out, "PNG")
     return PreparedAsset(
         output_path=out,
