@@ -70,16 +70,27 @@ If `buyers.json` is missing, use `scripts/discover_buyer_profiles.py` to generat
 - `procurement need`
 - optional `buyer_count`
 
+Auto-research notes:
+
+- prefer real companies with official websites
+- prefer actual buyers, distributors, project developers, integrators, manufacturers, or large procurement entities
+- output a 120-Chinese-character company bio
+- normalize website to domain only
+- read `OPENAI_API_KEY` from the current process first, then from Windows User/Machine environment variables when available
+- write `pipeline_failure.json` in the workspace when the research stage fails
+
+### 4. Fetch and rank image assets
+
 After buyer data is generated, use `scripts/fetch_buyer_assets.py` to try to fetch:
 
 - official logo assets
 - favicon or header-brand assets
 - right-side public visuals from `og:image` or product-like page images
 
-V4.4 asset-sourcing refinements:
+Asset-sourcing refinements:
 
 - do not stop at the homepage
-- expand into a small set of same-domain product, solution, application, project, about, or company pages
+- expand into same-domain product, solution, application, project, about, or company pages
 - add search-engine candidate pages as a supplement to official-site discovery
 - allow fallback candidate pages from public social/profile or map-style listings when the official site is weak or unavailable
 - rank candidates before downloading them
@@ -87,16 +98,9 @@ V4.4 asset-sourcing refinements:
 - cache per-site asset fetch results so repeated runs do not refetch the same domain
 - write a per-buyer sourcing summary to `asset_fetch_report.json`
 - optionally generate an AI right-side visual when public assets still fail and the user enables the fallback
+- optionally use `BUYER_BOARD_ENABLE_CURL_FALLBACK=1` when Python `urllib` is blocked but curl works
 
-Rules for auto-research mode:
-
-- prefer real companies with official websites
-- prefer enterprises that are actual buyers, distributors, project developers, integrators, manufacturers, or large procurement entities
-- output a 120-Chinese-character company bio
-- normalize website to domain only
-- keep `logo_path` and `site_image_path` empty if assets are not yet sourced
-
-### 4. Fill text first
+### 5. Fill text first
 
 Fill text before touching images.
 
@@ -107,7 +111,7 @@ Rules:
 - prefer `Microsoft YaHei` for Chinese text unless the template clearly uses another font
 - do not shrink text aggressively just to force content to fit
 
-### 5. Insert logos and right-side visuals separately
+### 6. Insert logos and right-side visuals separately
 
 Never crop a logo from the right-side website image.
 
@@ -127,6 +131,7 @@ Right-side image sourcing priority:
 Layout rules:
 
 - logo must align to the left edge of the approved logo area so it lines up with the text table below
+- logo assets must be fitted into the approved logo-slot aspect ratio before insertion, preserving original logo proportions
 - right-side images must be preprocessed before placement, not blindly center-cropped
 - trim obvious blank borders before right-side crop decisions
 - use content-aware crop first, then fall back to a full-subject blurred-backdrop composition for extreme aspect ratios
@@ -137,13 +142,13 @@ If image assets are missing in auto mode:
 - remove placeholder graphics rather than leaving incorrect old images in place
 - allow the PPT to export with text-only completeness
 
-### 6. Use the unified pipeline
+### 7. Use the unified pipeline
 
 Prefer the unified entry script:
 
 - `scripts/run_buyer_board_pipeline.py`
 
-It now supports:
+It supports:
 
 - existing `buyers.json` mode
 - `country + procurement need` auto-research mode
@@ -151,7 +156,20 @@ It now supports:
 - workspace-level `asset-cache.json` and `asset_fetch_report.json` outputs
 - optional `--enable-ai-visual-fallback` for right-side visual generation
 
-### 7. Verify visually
+### 8. Diagnose WorkBuddy or Windows issues
+
+When a WorkBuddy run behaves differently from local PowerShell, run:
+
+- `buyer-board-layout/scripts/doctor.py`
+
+Use the report to check:
+
+- whether `OPENAI_API_KEY` is visible to the current runner
+- whether required Python modules are installed
+- whether public website requests are allowed
+- whether PowerPoint COM automation is available
+
+### 9. Verify visually
 
 After export, inspect previews and check:
 
@@ -180,6 +198,8 @@ After export, inspect previews and check:
   Use when PowerPoint COM is unavailable and Codex still needs to place logos and right-side visuals into the PPT.
 - `scripts/generate_layout_config.py`
   Use when turning a manually adjusted reference PPT into a starter `layout-config.json`.
+- `scripts/doctor.py`
+  Use when diagnosing WorkBuddy, Windows environment-variable, network, dependency, or PowerPoint COM issues.
 
 ## Assets
 
@@ -195,6 +215,6 @@ These bundled assets are reference-grade examples, not universal truth:
 - Prefer `python-pptx` for deterministic text and table filling.
 - Prefer PowerPoint COM automation for final image placement and preview export when the environment supports it.
 - If PowerPoint COM is unavailable, use the Python fallback image script rather than failing the whole pipeline.
-- Auto-research mode currently depends on the OpenAI Python SDK and `OPENAI_API_KEY`.
+- Auto-research mode depends on the OpenAI Python SDK and `OPENAI_API_KEY`.
 - Keep scripts ASCII-friendly where possible to reduce encoding issues in PowerShell and automation.
 - Treat the current version as configuration-driven and reusable, but still verify the first run of any new template family before mass production.
