@@ -74,6 +74,10 @@ MIN_VISUAL_WIDTH = 240
 MIN_VISUAL_HEIGHT = 140
 MIN_LOGO_WIDTH = 60
 MIN_LOGO_HEIGHT = 20
+BROWSER_VIEWPORT_WIDTH = 1440
+BROWSER_VIEWPORT_HEIGHT = 1080
+BROWSER_WAIT_MS = 1200
+BROWSER_PAGE_LIMIT = 6
 
 
 @dataclass
@@ -399,6 +403,355 @@ def search_candidate_pages_with_notes(domain: str, buyer_name: str) -> tuple[lis
     return deduped[:MAX_PAGE_CANDIDATES], notes
 
 
+def import_playwright() -> Any:
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        raise RuntimeError(f"playwright_unavailable:{exc.__class__.__name__}") from exc
+    return sync_playwright, PlaywrightTimeoutError
+
+
+def rendered_payload_to_candidates(
+    base_url: str,
+    payload: dict[str, Any],
+    origin: str,
+) -> tuple[list[AssetCandidate], list[AssetCandidate], list[str]]:
+    logo_candidates: list[AssetCandidate] = []
+    visual_candidates: list[AssetCandidate] = []
+
+    for item in payload.get("icons", []):
+        src = item.get("src") or ""
+        if not src:
+            continue
+        logo_candidates.append(
+            AssetCandidate(
+                src=urljoin(base_url, src),
+                page=base_url,
+                kind=item.get("kind", "icon"),
+                cls=item.get("rel", ""),
+                origin=origin,
+            )
+        )
+
+    for item in payload.get("images", []):
+        src = item.get("src") or ""
+        if not src:
+            continue
+        candidate = AssetCandidate(
+            src=urljoin(base_url, src),
+            page=base_url,
+            kind=item.get("kind", "image"),
+            alt=item.get("alt", ""),
+            cls=item.get("className", ""),
+            origin=origin,
+        )
+        target = " ".join(
+            [
+                src,
+                item.get("alt", ""),
+                item.get("className", ""),
+                item.get("id", ""),
+                item.get("selectorHint", ""),
+            ]
+        ).lower()
+        if any(hint in target for hint in LOGO_HINTS):
+            logo_candidates.append(candidate)
+        else:
+            visual_candidates.append(candidate)
+
+    for item in payload.get("metaImages", []):
+        src = item.get("src") or ""
+        if not src:
+            continue
+        visual_candidates.insert(
+            0,
+            AssetCandidate(
+                src=urljoin(base_url, src),
+                page=base_url,
+                kind=item.get("kind", "meta"),
+                origin=origin,
+            ),
+        )
+
+    for item in payload.get("backgrounds", []):
+        src = item.get("src") or ""
+        if not src:
+            continue
+        visual_candidates.append(
+            AssetCandidate(
+                src=urljoin(base_url, src),
+                page=base_url,
+                kind="background",
+                cls=" ".join([item.get("className", ""), item.get("selectorHint", "")]).strip(),
+                origin=origin,
+            )
+        )
+
+    page_urls: list[str] = []
+    for item in payload.get("links", []):
+        href = item.get("href") or ""
+        full = urljoin(base_url, href)
+        if not same_host(base_url, full):
+            continue
+        joined_hint = f"{href} {item.get('hint', '')}".lower()
+        if any(hint in joined_hint for hint in PAGE_HINTS):
+            page_urls.append(full)
+
+    return logo_candidates, visual_candidates, dedupe(page_urls)[:MAX_PAGE_CANDIDATES]
+
+
+def extract_rendered_payload(page: Any) -> dict[str, Any]:
+    return page.evaluate(
+        """
+        () => {
+          const absolute = (value) => {
+            if (!value) return "";
+            try {
+              return new URL(value, document.baseURI).href;
+            } catch (error) {
+              return value;
+            }
+          };
+          const pickBackgroundUrl = (value) => {
+            if (!value || !value.includes("url(")) return "";
+            const match = value.match(/url\\((['"]?)(.*?)\\1\\)/i);
+            return match ? absolute(match[2]) : "";
+          };
+          const icons = [];
+          document.querySelectorAll("link[rel]").forEach((el) => {
+            const rel = (el.getAttribute("rel") || "").toLowerCase();
+            const href = el.getAttribute("href") || "";
+            if (href && (rel.includes("icon") || rel.includes("logo"))) {
+              icons.push({ src: absolute(href), kind: "icon", rel });
+            }
+          });
+          const metaImages = [];
+          document.querySelectorAll("meta[property], meta[name]").forEach((el) => {
+            const key = (el.getAttribute("property") || el.getAttribute("name") || "").toLowerCase();
+            const content = el.getAttribute("content") || "";
+            if (content && (key === "og:image" || key === "twitter:image")) {
+              metaImages.push({ src: absolute(content), kind: "meta" });
+            }
+          });
+          const images = [];
+          document.querySelectorAll("img").forEach((el) => {
+            const src =
+              el.currentSrc ||
+              el.getAttribute("src") ||
+              el.getAttribute("data-src") ||
+              el.getAttribute("data-lazy-src") ||
+              "";
+            if (!src) return;
+            images.push({
+              src: absolute(src),
+              alt: el.getAttribute("alt") || "",
+              className: el.getAttribute("class") || "",
+              id: el.getAttribute("id") || "",
+              selectorHint: [el.tagName, el.closest("header,nav,main,section,figure,a,div")?.tagName || ""].join(" "),
+              kind: "image",
+            });
+          });
+          const backgrounds = [];
+          document.querySelectorAll("header, nav, main, section, figure, a, div").forEach((el) => {
+            const style = getComputedStyle(el);
+            const bg = pickBackgroundUrl(style.backgroundImage || "");
+            if (!bg) return;
+            backgrounds.push({
+              src: bg,
+              className: el.getAttribute("class") || "",
+              selectorHint: [el.tagName, el.getAttribute("id") || ""].join(" "),
+            });
+          });
+          const links = [];
+          document.querySelectorAll("a[href]").forEach((el) => {
+            const href = el.getAttribute("href") || "";
+            if (!href) return;
+            links.push({
+              href: absolute(href),
+              hint: [
+                el.getAttribute("title") || "",
+                el.getAttribute("aria-label") || "",
+                (el.textContent || "").trim().slice(0, 80),
+              ].join(" "),
+            });
+          });
+          return { icons, metaImages, images, backgrounds, links };
+        }
+        """
+    )
+
+
+def render_page(
+    page: Any,
+    target_url: str,
+    origin: str,
+    timeout_ms: int,
+) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str], list[str]]:
+    notes: list[str] = []
+    try:
+        page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 4000))
+        except Exception:
+            notes.append(f"browser_networkidle_timeout:{target_url}")
+        page.wait_for_timeout(BROWSER_WAIT_MS)
+        final_url = str(page.url)
+        html = page.content()
+        logo_candidates, visual_candidates, page_urls = parse_page(final_url, html, origin=origin)
+        rendered_payload = extract_rendered_payload(page)
+        extra_logos, extra_visuals, extra_pages = rendered_payload_to_candidates(final_url, rendered_payload, origin)
+        logo_candidates.extend(extra_logos)
+        visual_candidates.extend(extra_visuals)
+        page_urls.extend(extra_pages)
+        notes.append(f"browser_page:{final_url}:origin={origin}")
+        return final_url, logo_candidates, visual_candidates, dedupe(page_urls)[:MAX_PAGE_CANDIDATES], notes
+    except Exception as exc:
+        notes.append(f"browser_page_failed:{target_url}:{exc.__class__.__name__}:origin={origin}")
+        return None, [], [], [], notes
+
+
+def discover_assets_for_domain_light(
+    domain: str,
+    buyer_name: str,
+) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
+    notes: list[str] = []
+    for base_url in candidate_base_urls(domain):
+        try:
+            final_url, body, content_type = fetch_url(base_url)
+        except Exception as exc:
+            notes.append(f"base_failed:{base_url}:{exc.__class__.__name__}")
+            continue
+        if not content_type.startswith("text/html"):
+            notes.append(f"base_not_html:{base_url}:{content_type}")
+            continue
+
+        html = body.decode("utf-8", errors="ignore")
+        all_logo_candidates: list[AssetCandidate] = []
+        all_visual_candidates: list[AssetCandidate] = []
+
+        logos, visuals, page_urls = parse_page(final_url, html, origin="official")
+        all_logo_candidates.extend(logos)
+        all_visual_candidates.extend(visuals)
+        notes.append(f"base:{final_url}")
+
+        search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
+        notes.extend(search_notes)
+        for page_url, origin in dedupe([(u, o) for (u, o) in [(url, "official") for url in page_urls] + search_pages]):
+            try:
+                page_final_url, page_body, page_content_type = fetch_url(page_url)
+            except Exception as exc:
+                notes.append(f"page_failed:{page_url}:{exc.__class__.__name__}:origin={origin}")
+                continue
+            if not page_content_type.startswith("text/html"):
+                notes.append(f"page_not_html:{page_url}:{page_content_type}:origin={origin}")
+                continue
+            page_html = page_body.decode("utf-8", errors="ignore")
+            page_logos, page_visuals, _ = parse_page(page_final_url, page_html, origin=origin)
+            all_logo_candidates.extend(page_logos)
+            all_visual_candidates.extend(page_visuals)
+            notes.append(f"page:{page_final_url}:origin={origin}")
+
+        for item in all_logo_candidates:
+            item.score = score_logo_candidate(item)
+        for item in all_visual_candidates:
+            item.score = score_visual_candidate(item)
+
+        ranked_logos = sorted(
+            [item for item in dedupe_candidates(all_logo_candidates) if has_supported_extension(item.src)],
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        ranked_visuals = sorted(
+            [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        return final_url, ranked_logos, ranked_visuals, notes
+    return None, [], [], notes
+
+
+def discover_assets_for_domain_browser(
+    domain: str,
+    buyer_name: str,
+    timeout_ms: int,
+) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
+    notes: list[str] = []
+    try:
+        sync_playwright, _ = import_playwright()
+    except RuntimeError as exc:
+        notes.append(str(exc))
+        return None, [], [], notes
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+            user_agent=USER_AGENT,
+        )
+        page = context.new_page()
+        try:
+            all_logo_candidates: list[AssetCandidate] = []
+            all_visual_candidates: list[AssetCandidate] = []
+            resolved_url: str | None = None
+            page_urls: list[tuple[str, str]] = []
+
+            for base_url in candidate_base_urls(domain):
+                final_url, logos, visuals, discovered_pages, base_notes = render_page(page, base_url, "official", timeout_ms)
+                notes.extend(base_notes)
+                if not final_url:
+                    continue
+                resolved_url = final_url
+                all_logo_candidates.extend(logos)
+                all_visual_candidates.extend(visuals)
+                page_urls.extend((url, "official") for url in discovered_pages)
+                break
+
+            if not resolved_url:
+                return None, [], [], notes
+
+            search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
+            notes.extend(search_notes)
+            page_urls.extend(search_pages)
+
+            seen = set()
+            processed = 0
+            for page_url, origin in page_urls:
+                if page_url in seen:
+                    continue
+                seen.add(page_url)
+                processed += 1
+                if processed > BROWSER_PAGE_LIMIT:
+                    notes.append(f"browser_page_limit:{BROWSER_PAGE_LIMIT}")
+                    break
+                final_url, logos, visuals, _, page_notes = render_page(page, page_url, origin, timeout_ms)
+                notes.extend(page_notes)
+                if not final_url:
+                    continue
+                all_logo_candidates.extend(logos)
+                all_visual_candidates.extend(visuals)
+
+            for item in all_logo_candidates:
+                item.score = score_logo_candidate(item)
+            for item in all_visual_candidates:
+                item.score = score_visual_candidate(item)
+
+            ranked_logos = sorted(
+                [item for item in dedupe_candidates(all_logo_candidates) if has_supported_extension(item.src)],
+                key=lambda item: item.score,
+                reverse=True,
+            )
+            ranked_visuals = sorted(
+                [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
+                key=lambda item: item.score,
+                reverse=True,
+            )
+            return resolved_url, ranked_logos, ranked_visuals, notes
+        finally:
+            context.close()
+            browser.close()
+
+
 def inspect_downloaded_asset(path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {"bytes": path.stat().st_size}
     suffix = path.suffix.lower()
@@ -466,61 +819,41 @@ def download_asset(candidate: AssetCandidate, output_path: Path, kind: str) -> t
     return final_path, meta
 
 
-def discover_assets_for_domain(domain: str, buyer_name: str) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
-    notes: list[str] = []
-    for base_url in candidate_base_urls(domain):
-        try:
-            final_url, body, content_type = fetch_url(base_url)
-        except Exception as exc:
-            notes.append(f"base_failed:{base_url}:{exc.__class__.__name__}")
-            continue
-        if not content_type.startswith("text/html"):
-            notes.append(f"base_not_html:{base_url}:{content_type}")
-            continue
+def discover_assets_for_domain(
+    domain: str,
+    buyer_name: str,
+    asset_mode: str,
+    browser_timeout_ms: int,
+) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
+    if asset_mode == "browser":
+        return discover_assets_for_domain_browser(domain, buyer_name, browser_timeout_ms)
 
-        html = body.decode("utf-8", errors="ignore")
-        all_logo_candidates: list[AssetCandidate] = []
-        all_visual_candidates: list[AssetCandidate] = []
+    final_url, logo_candidates, visual_candidates, notes = discover_assets_for_domain_light(domain, buyer_name)
+    if asset_mode != "auto":
+        return final_url, logo_candidates, visual_candidates, notes
 
-        logos, visuals, page_urls = parse_page(final_url, html, origin="official")
-        all_logo_candidates.extend(logos)
-        all_visual_candidates.extend(visuals)
-        notes.append(f"base:{final_url}")
+    if logo_candidates and visual_candidates:
+        notes.append("browser_skip:auto_light_success")
+        return final_url, logo_candidates, visual_candidates, notes
 
-        search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
-        notes.extend(search_notes)
-        for page_url, origin in dedupe([(u, o) for (u, o) in [(url, "official") for url in page_urls] + search_pages]):
-            try:
-                page_final_url, page_body, page_content_type = fetch_url(page_url)
-            except Exception as exc:
-                notes.append(f"page_failed:{page_url}:{exc.__class__.__name__}:origin={origin}")
-                continue
-            if not page_content_type.startswith("text/html"):
-                notes.append(f"page_not_html:{page_url}:{page_content_type}:origin={origin}")
-                continue
-            page_html = page_body.decode("utf-8", errors="ignore")
-            page_logos, page_visuals, _ = parse_page(page_final_url, page_html, origin=origin)
-            all_logo_candidates.extend(page_logos)
-            all_visual_candidates.extend(page_visuals)
-            notes.append(f"page:{page_final_url}:origin={origin}")
-
-        for item in all_logo_candidates:
-            item.score = score_logo_candidate(item)
-        for item in all_visual_candidates:
-            item.score = score_visual_candidate(item)
-
-        ranked_logos = sorted(
-            [item for item in dedupe_candidates(all_logo_candidates) if has_supported_extension(item.src)],
-            key=lambda item: item.score,
-            reverse=True,
-        )
-        ranked_visuals = sorted(
-            [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
-            key=lambda item: item.score,
-            reverse=True,
-        )
-        return final_url, ranked_logos, ranked_visuals, notes
-    return None, [], [], notes
+    browser_url, browser_logos, browser_visuals, browser_notes = discover_assets_for_domain_browser(
+        domain,
+        buyer_name,
+        browser_timeout_ms,
+    )
+    notes.extend(browser_notes)
+    merged_url = final_url or browser_url
+    merged_logos = logo_candidates[:]
+    merged_visuals = visual_candidates[:]
+    merged_logos.extend(browser_logos)
+    merged_visuals.extend(browser_visuals)
+    for item in merged_logos:
+        item.score = score_logo_candidate(item)
+    for item in merged_visuals:
+        item.score = score_visual_candidate(item)
+    ranked_logos = sorted(dedupe_candidates(merged_logos), key=lambda item: item.score, reverse=True)
+    ranked_visuals = sorted(dedupe_candidates(merged_visuals), key=lambda item: item.score, reverse=True)
+    return merged_url, ranked_logos, ranked_visuals, notes
 
 
 def load_cache(cache_path: Path) -> dict[str, Any]:
@@ -571,6 +904,8 @@ def process_buyer(
     assets_dir: Path,
     cache: dict[str, Any],
     enable_ai_visual_fallback: bool,
+    asset_mode: str,
+    browser_timeout_ms: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     website = str(buyer.get("website", "") or "").strip()
     report: dict[str, Any] = {
@@ -579,6 +914,7 @@ def process_buyer(
         "logo_hit": False,
         "site_hit": False,
         "site_source": "",
+        "asset_mode": asset_mode,
         "notes": [],
     }
     if not website:
@@ -598,7 +934,12 @@ def process_buyer(
         report["notes"].append("cache_hit")
         return buyer, report
 
-    final_url, logo_candidates, visual_candidates, notes = discover_assets_for_domain(website, str(buyer.get("name", "")))
+    final_url, logo_candidates, visual_candidates, notes = discover_assets_for_domain(
+        website,
+        str(buyer.get("name", "")),
+        asset_mode,
+        browser_timeout_ms,
+    )
     slug = slugify(str(buyer.get("name", "buyer")))
 
     logo_path = ""
@@ -676,6 +1017,18 @@ def main() -> int:
     parser.add_argument("--cache-file", required=True, help="cache json file path")
     parser.add_argument("--report-file", required=True, help="asset fetch report json file path")
     parser.add_argument("--enable-ai-visual-fallback", action="store_true", help="generate AI site visual when public assets are unavailable")
+    parser.add_argument(
+        "--asset-mode",
+        choices=("light", "auto", "browser"),
+        default="light",
+        help="light uses HTML parsing only, auto adds Playwright fallback when needed, browser uses Playwright-first fetching",
+    )
+    parser.add_argument(
+        "--browser-timeout-ms",
+        type=int,
+        default=18000,
+        help="per-page browser render timeout in milliseconds when Playwright-enhanced asset mode is enabled",
+    )
     args = parser.parse_args()
 
     buyers_path = Path(args.buyers)
@@ -690,7 +1043,14 @@ def main() -> int:
     enriched = []
     report_items = []
     for item in buyers:
-        buyer, report = process_buyer(dict(item), assets_dir, cache, args.enable_ai_visual_fallback)
+        buyer, report = process_buyer(
+            dict(item),
+            assets_dir,
+            cache,
+            args.enable_ai_visual_fallback,
+            args.asset_mode,
+            args.browser_timeout_ms,
+        )
         enriched.append(buyer)
         report_items.append(report)
 
