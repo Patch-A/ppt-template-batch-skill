@@ -1,4 +1,4 @@
-﻿# Generic PPT Batch Workflow
+# Generic PPT Batch Workflow
 
 Use this reference when the user's goal is broader than buyer-board production: any PPT template should be decomposed, mapped to structured data, batch-filled, checked, and exported.
 
@@ -41,6 +41,8 @@ Prefer explicit JSON data for repeatable runs:
 
 For new template families, start with a small manual dataset and verify one output before scaling up.
 
+Read `layout-config-schema.md` when a generic template needs executable mappings. The generic runner supports text shapes, table cells, token placeholders, image slots, repeated slide duplication, extra slide trimming, required-field reporting, and per-job JSON reports.
+
 ## Replacement rules
 
 - Preserve template text styles by default.
@@ -50,6 +52,30 @@ For new template families, start with a small manual dataset and verify one outp
 - Do not invent extra fields just because a previous domain used them.
 - Avoid over-shrinking text; prefer concise source copy and user-visible review.
 - Use ASCII paths for intermediate files on Windows when Chinese paths cause PowerShell/Python encoding issues.
+
+## Generic one-click commands
+
+Single output:
+
+```bash
+python scripts/run_ppt_batch_pipeline.py ^
+  --template "path/to/template.pptx" ^
+  --records "path/to/records.json" ^
+  --layout-config "path/to/layout-config.json" ^
+  --output "output/finished.pptx" ^
+  --workspace "output/workspace"
+```
+
+Multiple outputs:
+
+```bash
+python scripts/run_ppt_batch_pipeline.py ^
+  --batch "path/to/batch.json" ^
+  --output-dir "output/decks" ^
+  --workspace "output/workspace"
+```
+
+Use `ppt-template-batch/scripts/fill_ppt_from_records.py` directly when embedding the filler into another workflow.
 
 ## Domain presets
 

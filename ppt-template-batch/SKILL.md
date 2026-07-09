@@ -1,4 +1,4 @@
-﻿---
+---
 name: ppt-template-batch
 description: General-purpose PowerPoint template decomposition and batch-generation workflow for PPT/PPTX files. Use when Codex needs to analyze any provided PPT template, extract reusable layout rules, create or refine layout-config mappings, batch-fill structured data into slides, preserve template text styles, replace approved image placeholders, duplicate or trim repeated slides, and export finished decks. Includes buyer-board and buyer-briefing presets for buyer research, company profiles, procurement categories, logos, website visuals, and 6-buyers-per-page briefing layouts, but the core skill is not limited to buyer-board projects.
 ---
@@ -64,6 +64,17 @@ Keep durable rules in a reference file when the template family will be reused, 
 
 Use `scripts/generate_layout_config.py` for a starter config when the template resembles the buyer-board table layout. For other layouts, generate a custom config after inspecting the PPT structure.
 
+For generic templates, prefer the reusable config-driven filler before writing a dedicated script:
+
+```bash
+python scripts/run_ppt_batch_pipeline.py ^
+  --template "template.pptx" ^
+  --records "records.json" ^
+  --layout-config "layout-config.json" ^
+  --output "output/finished.pptx" ^
+  --workspace "output/workspace"
+```
+
 ### 4. Build the data contract
 
 Prefer explicit JSON input for repeatability:
@@ -94,6 +105,8 @@ Use these scripts when the template matches their data model:
 - `scripts/fill_buyer_briefing_pages.py` for 6-buyers-per-page briefing pages
 
 For unrelated template families, write a small dedicated filler using the same principles: inspect placeholders, preserve styles, fill data, then verify.
+
+Use `scripts/fill_ppt_from_records.py` for generic text, table, placeholder, image, and repeated-slide mappings. Read `references/layout-config-schema.md` before authoring a new generic `layout-config.json`.
 
 ### 6. Insert images only after text is stable
 
@@ -162,14 +175,16 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
 
 - `references/generic-ppt-batch-workflow.md`
   Use for arbitrary PPT template decomposition and batch replacement tasks.
+- `references/layout-config-schema.md`
+  Use when authoring generic `layout-config.json` mappings for text, tables, images, placeholders, repeated slides, and batch jobs.
 - `references/buyer-board-rules.md`
   Use only for buyer-board profile pages with one buyer per slide.
 - `references/buyer-briefing-rules.md`
   Use only for compact buyer-briefing pages with one category and 6 buyers per slide.
-- `references/sa-example-data.md`
-  Use for the buyer-board example data structure.
 - `scripts/generate_layout_config.py`
   Use when turning a reference PPT into a starter `layout-config.json`.
+- `scripts/fill_ppt_from_records.py`
+  Use for generic config-driven PPT filling that is not buyer-specific.
 - `scripts/fill_buyer_board_text.py`
   Use for buyer-board table templates.
 - `scripts/fill_buyer_briefing_pages.py`
@@ -187,12 +202,7 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
 
 ## Assets
 
-Bundled example assets are examples, not universal truth:
-
-- `assets/examples/buyer-manual-reference.pptx`
-- `assets/examples/sa-text-draft-input.pptx`
-- `assets/examples/sa-images/`
-- `assets/examples/sa-layout-config.json`
+Do not bundle real customer decks, real buyer samples, fetched logos, or website screenshots in the public skill. Keep only redacted templates or synthetic examples when examples are needed.
 
 ## Operating Notes
 

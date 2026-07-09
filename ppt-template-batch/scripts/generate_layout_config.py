@@ -58,10 +58,13 @@ def infer_value_key(label: str) -> str:
         "公司": "name",
         "国家": "country",
         "网站": "website",
+        "官网": "website",
         "采购产品": "products",
         "采购需求": "products",
+        "采购品类": "products",
         "简介": "bio",
         "企业简介": "bio",
+        "买家简介": "bio",
     }
     return mapping.get(label, f"field_{label}")
 

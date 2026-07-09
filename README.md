@@ -1,4 +1,4 @@
-﻿# PPT Template Batch Skill
+# PPT Template Batch Skill
 
 General Codex skill for decomposing PowerPoint templates, mapping layout rules, filling structured data, replacing approved image slots, and batch-generating finished PPT decks.
 
@@ -9,6 +9,7 @@ This repository is focused on **generic PPT template automation**. Buyer-board a
 - `ppt-template-batch/`: the Codex skill package.
 - `ppt-template-batch/scripts/`: reusable PPT decomposition, text filling, image placement, diagnostics, and buyer preset scripts.
 - `ppt-template-batch/references/`: workflow rules for generic PPT batch processing and buyer-specific presets.
+- `scripts/run_ppt_batch_pipeline.py`: generic one-click pipeline for config-driven PPT filling.
 - `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
 - `scripts/recover_real_assets.py`: buyer-board asset recovery helper when sandboxed runs cannot fetch real web assets.
 
@@ -42,9 +43,32 @@ Recommended artifacts:
 The current repo includes the workflow guidance for this mode in:
 
 - `ppt-template-batch/references/generic-ppt-batch-workflow.md`
+- `ppt-template-batch/references/layout-config-schema.md`
+- `ppt-template-batch/scripts/fill_ppt_from_records.py`
+- `scripts/run_ppt_batch_pipeline.py`
 - `ppt-template-batch/scripts/generate_layout_config.py`
 
-For highly custom layouts, create a small dedicated filler script after decomposing the template. Reuse the same principles: preserve styles, use structured data, avoid stale template content, and verify outputs.
+Single generic run:
+
+```bash
+python scripts/run_ppt_batch_pipeline.py ^
+  --template "path/to/template.pptx" ^
+  --records "path/to/records.json" ^
+  --layout-config "path/to/layout-config.json" ^
+  --output "output/finished.pptx" ^
+  --workspace "output/workspace"
+```
+
+Batch generic run:
+
+```bash
+python scripts/run_ppt_batch_pipeline.py ^
+  --batch "path/to/batch.json" ^
+  --output-dir "output/decks" ^
+  --workspace "output/workspace"
+```
+
+For highly custom layouts, create a small dedicated filler script only after trying the config-driven filler. Reuse the same principles: preserve styles, use structured data, avoid stale template content, and verify outputs.
 
 ### Buyer-board preset
 
@@ -173,6 +197,8 @@ Depending on the workflow, the workspace may contain:
 
 - `layout-config.generated.json`: starter layout mapping
 - `records.json`, `buyers.generated.json`, or `briefing-pages.json`: structured input data
+- `fill_report.json`: generic per-job fill report
+- `ppt_batch_report.json`: generic batch summary report
 - `buyers.with-assets.json`: buyer data enriched with fetched image paths
 - `asset-cache.json`: per-site asset cache
 - `asset_fetch_report.json`: per-buyer image hit report
@@ -184,6 +210,7 @@ Depending on the workflow, the workspace may contain:
 
 - The generic PPT direction is active, but many bundled scripts still carry buyer-board names for compatibility.
 - Arbitrary PPT templates still require first-run decomposition and mapping verification.
+- The generic runner supports common shape, table, placeholder, repeated-slide, and image-slot patterns; unusual animations, SmartArt, charts, and complex grouped objects may still need a custom filler.
 - Public website asset fetching is best-effort and depends on local network permissions.
 - Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight.
 - AI right-side visual fallback is opt-in and does not generate logos.
@@ -202,12 +229,11 @@ When sharing examples, prefer:
 
 ## Roadmap
 
-The next direction is to make the generic PPT layer more explicit:
+The next direction is to deepen generic PPT support:
 
-- rename or alias the skill/repo to a generic PPT batch name after compatibility impact is reviewed
-- add a generic `run_ppt_batch_pipeline.py` entrypoint
-- add a broader layout-config generator for non-buyer templates
-- add reusable validators for slide count, field coverage, style preservation, and stale placeholders
+- add a broader visual layout-config generator for non-buyer templates
+- add reusable validators for style preservation and stale placeholders
+- add optional preview export for generic runs when PowerPoint COM is available
 - keep buyer-board and buyer-briefing as bundled presets
 
 ## Sharing
