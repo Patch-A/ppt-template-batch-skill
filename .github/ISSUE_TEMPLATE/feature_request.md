@@ -1,4 +1,4 @@
----
+﻿---
 name: Feature request
 about: Suggest a new capability, template mode, or workflow improvement
 title: "[Feature] "
@@ -21,9 +21,10 @@ Describe the ideal input -> processing -> output behavior.
 ## Example artifacts
 
 - Template type:
-- Sample buyer data:
+- Sample structured data:
 - Sample output expectation:
 
 ## Notes
 
 Add any constraints, edge cases, or related examples.
+

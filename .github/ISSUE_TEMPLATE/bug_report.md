@@ -1,4 +1,4 @@
----
+﻿---
 name: Bug report
 about: Report a workflow, layout, export, or compatibility problem
 title: "[Bug] "
@@ -13,8 +13,8 @@ Describe the problem in one or two sentences.
 ## Inputs
 
 - Template PPT:
-- Buyer data format:
-- Image config:
+- Structured data format:
+- Layout/image config:
 - Output goal:
 
 ## What happened
@@ -37,3 +37,4 @@ Describe the expected layout or workflow result.
 - OS:
 - PowerPoint version:
 - Codex environment:
+

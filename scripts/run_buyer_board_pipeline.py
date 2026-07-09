@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -14,7 +14,7 @@ def resolve_repo_root() -> Path:
 
 
 def resolve_skill_root(repo_root: Path) -> Path:
-    return repo_root / "buyer-board-layout"
+    return repo_root / "ppt-template-batch"
 
 
 def decode_output(data: bytes | None) -> str:
@@ -330,3 +330,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
