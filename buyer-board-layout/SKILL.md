@@ -1,6 +1,6 @@
----
+﻿---
 name: buyer-board-layout
-description: Build and automate buyer-board PowerPoint workflows that start from a PPT template, decompose or generate layout-config rules, research buyers from a country plus procurement need, fill buyer/company content, place logos and website visuals when available, and export a finished deck. Use when Codex needs to turn a manually adjusted PPT buyer-board template into a reusable production workflow, especially for buyer discovery, title/table/logo/image mapping, buyer profile page generation, and template-to-output slide automation.
+description: Build and automate buyer-board and buyer-briefing PowerPoint workflows that start from a PPT template, decompose or generate layout-config rules, research buyers from a country plus procurement need, fill buyer/company content, preserve template text styles, place logos and website visuals when available, and export a finished deck. Use when Codex needs to turn a manually adjusted PPT buyer-board template or compact buyer-briefing template into a reusable production workflow, especially for buyer discovery, title/table/logo/image mapping, one-buyer profile pages, six-buyers-per-page briefing pages, and template-to-output slide automation.
 ---
 
 # Buyer Board Layout
@@ -9,10 +9,11 @@ description: Build and automate buyer-board PowerPoint workflows that start from
 
 Use this skill when the goal is not just "edit one PPT", but "turn a buyer-board template into a repeatable pipeline".
 
-The workflow supports two entry modes:
+The workflow supports three entry modes:
 
 1. Structured mode: the user already has `buyers.json`.
 2. Auto-research mode: the user only provides the PPT template, target `country`, and `procurement need`.
+3. Buyer-briefing mode: the user provides a compact "买家商情" template where each slide contains one category and 6 short buyer entries.
 
 Expected production sequence:
 
@@ -119,6 +120,8 @@ Rules:
 - prefer `Microsoft YaHei` for Chinese text unless the template clearly uses another font
 - do not shrink text aggressively just to force content to fit
 
+For compact "买家商情" slides, use `scripts/fill_buyer_briefing_pages.py` instead of the long buyer-board filler. Read `references/buyer-briefing-rules.md` when the template has one category title and 6 buyer entries per page. Preserve the original text-frame run structure: put the company name in the first run, the remaining intro in the second run, and clear extra runs by setting their text to empty. This avoids drifting font, size, color, and bold styles in templates that rely on inherited PowerPoint run formatting.
+
 ### 6. Insert logos and right-side visuals separately
 
 Never crop a logo from the right-side website image.
@@ -170,6 +173,7 @@ It supports:
 When a WorkBuddy run behaves differently from local PowerShell, run:
 
 - `buyer-board-layout/scripts/doctor.py`
+- `scripts/recover_real_assets.py` or `scripts/recover_real_assets.ps1` when the PPT completed but real logo / website asset fetch was blocked by the sandbox
 
 Use the report to check:
 
@@ -178,6 +182,13 @@ Use the report to check:
 - whether Playwright and Chromium can launch for browser-enhanced asset fetch
 - whether public website requests are allowed
 - whether PowerPoint COM automation is available
+
+Recovery guidance:
+
+- if WorkBuddy completes the PPT but only fallback visuals are present, prefer a local second pass outside the sandbox instead of re-running the whole buyer research step immediately
+- use `scripts/recover_real_assets.py --workspace ... --asset-mode browser` when the workspace artifacts are still available
+- use `--skip-ppt-refresh` when only refreshed `buyers.json` and downloaded assets are needed
+- do not claim that the skill AI-generated a logo unless there is direct evidence from the user workflow; the current bundled pipeline only offers AI fallback for the right-side visual, not for logos
 
 ### 9. Verify visually
 
@@ -194,12 +205,16 @@ After export, inspect previews and check:
 
 - `references/buyer-board-rules.md`
   Use for the decomposed layout standard and formatting rules.
+- `references/buyer-briefing-rules.md`
+  Use for compact buyer-briefing pages with one category and 6 buyers per slide.
 - `references/sa-example-data.md`
   Use for the expected buyer input structure.
 - `scripts/discover_buyer_profiles.py`
   Use when the user only provides country and procurement need and Codex must generate buyer data first.
 - `scripts/fill_buyer_board_text.py`
   Use when generating the text-only PPT layer from a template, structured buyer data, and `layout-config.json`.
+- `scripts/fill_buyer_briefing_pages.py`
+  Use when generating compact buyer-briefing pages while preserving the template's original run-level text styles.
 - `scripts/fetch_buyer_assets.py`
   Use after buyer research when Codex should try to source public buyer logos and right-side visuals automatically.
 - `scripts/apply_buyer_board_images.ps1`
@@ -228,3 +243,5 @@ These bundled assets are reference-grade examples, not universal truth:
 - Auto-research mode depends on the OpenAI Python SDK and `OPENAI_API_KEY`.
 - Keep scripts ASCII-friendly where possible to reduce encoding issues in PowerShell and automation.
 - Treat the current version as configuration-driven and reusable, but still verify the first run of any new template family before mass production.
+
+
