@@ -1,0 +1,5 @@
+﻿interface:
+  display_name: "PPT Template Batch"
+  short_description: "Decompose PPT templates, map data, and batch-generate decks."
+  default_prompt: "Use $ppt-template-batch to analyze any PPT template, map its layout rules, fill structured data while preserving template styles, and export finished decks. Use buyer-board presets only when the task is buyer-oriented."
+

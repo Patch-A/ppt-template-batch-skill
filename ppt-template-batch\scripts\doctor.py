@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import importlib.util
@@ -107,8 +107,8 @@ def build_report() -> dict[str, object]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check buyer-board-layout runtime readiness.")
-    parser.add_argument("--output", default="buyer-board-doctor-report.json", help="Diagnostic report path")
+    parser = argparse.ArgumentParser(description="Check ppt-template-batch runtime readiness.")
+    parser.add_argument("--output", default="ppt-template-batch-doctor-report.json", help="Diagnostic report path")
     args = parser.parse_args()
 
     report = build_report()
@@ -121,3 +121,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

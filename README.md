@@ -1,61 +1,105 @@
-﻿# buyer-board-layout
+﻿# PPT Template Batch Skill
 
-Codex skill for buyer-board PPT template decomposition, buyer research, layout-config generation, content filling, image placement, and final export.
+General Codex skill for decomposing PowerPoint templates, mapping layout rules, filling structured data, replacing approved image slots, and batch-generating finished PPT decks.
+
+This repository is focused on **generic PPT template automation**. Buyer-board and buyer-briefing workflows are bundled presets, not the limit of the skill.
 
 ## What this repo contains
 
-- `buyer-board-layout/`: the Codex skill
-- `scripts/run_buyer_board_pipeline.py`: one-click unified entry script
-- `scripts/recover_real_assets.py`: local rescue script for re-fetching real logos and site images after a sandboxed run
+- `ppt-template-batch/`: the Codex skill package.
+- `ppt-template-batch/scripts/`: reusable PPT decomposition, text filling, image placement, diagnostics, and buyer preset scripts.
+- `ppt-template-batch/references/`: workflow rules for generic PPT batch processing and buyer-specific presets.
+- `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
+- `scripts/recover_real_assets.py`: buyer-board asset recovery helper when sandboxed runs cannot fetch real web assets.
 
-## Current maturity
+## Core workflow
 
-This repository supports:
+Use this skill when you want to turn any PPT/PPTX template into a repeatable batch workflow:
+
+1. Provide a PPT template or manually adjusted reference deck.
+2. Decompose slide structure, repeated pages, text boxes, tables, image placeholders, fixed elements, and styling.
+3. Generate or refine `layout-config.json`.
+4. Define the data contract, such as `records.json`, `buyers.json`, or `briefing-pages.json`.
+5. Fill text while preserving template fonts, colors, alignment, and run-level styles where needed.
+6. Replace approved image placeholders without touching fixed design elements.
+7. Export one or many PPT files.
+8. Verify slide count, required fields, missing records, encoding, and obvious layout regressions.
+
+## Supported modes
+
+### Generic PPT batch mode
+
+Use this when the template is not necessarily buyer-related: product catalogs, profile decks, reports, training pages, market snapshots, quote sheets, exhibitor lists, or other repeated PPT layouts.
+
+Recommended artifacts:
+
+- `template.pptx`
+- `layout-config.json`
+- `records.json`
+- optional `assets/`
+- optional `batch.json` for multiple output files
+
+The current repo includes the workflow guidance for this mode in:
+
+- `ppt-template-batch/references/generic-ppt-batch-workflow.md`
+- `ppt-template-batch/scripts/generate_layout_config.py`
+
+For highly custom layouts, create a small dedicated filler script after decomposing the template. Reuse the same principles: preserve styles, use structured data, avoid stale template content, and verify outputs.
+
+### Buyer-board preset
+
+Use this when each content slide represents one buyer profile and the deck needs company name, country, website, procurement products, company bio, optional logo, and optional website/product visual.
+
+This preset supports:
 
 - template-based buyer-board generation
-- compact buyer-briefing generation with 6 buyers per slide
 - layout-config scaffold generation from a reference PPT
-- structured buyer text filling
 - country + procurement-need driven buyer research
-- public-website buyer asset fetching
-- optional Playwright-enhanced rendered-page asset fetching
-- search-engine candidate page discovery as a supplement to site crawling
-- social/profile/map candidate-page fallback discovery
-- image candidate ranking plus size, aspect-ratio, and file-size filtering
+- structured buyer text filling
+- public website logo and visual fetching
+- optional Playwright-enhanced asset fetching
 - asset cache reuse through `asset-cache.json`
-- per-run asset fetch reporting through `asset_fetch_report.json`
-- smarter right-side visual preprocessing with whitespace trim, content-aware crop, and extreme-ratio fallback
-- logo slot aspect fitting so square or wide logos are not distorted inside narrow template slots
-- optional AI right-side visual fallback via `--enable-ai-visual-fallback`
-- WorkBuddy/Windows runtime diagnostics through `doctor.py`
-- PowerPoint COM image placement with Python fallback placement when COM is unavailable
+- per-run asset report through `asset_fetch_report.json`
+- PowerPoint COM image placement with Python fallback
+- WorkBuddy/Windows diagnostics through `doctor.py`
 
-## Input modes
+One-click existing buyer preset data:
 
-### Mode 1: Existing buyers.json
+```bash
+python scripts/run_buyer_board_pipeline.py ^
+  --template "path/to/template.pptx" ^
+  --buyers "path/to/buyers.json" ^
+  --layout-config "path/to/layout-config.json" ^
+  --output "output/finished.pptx" ^
+  --preview-dir "output/previews" ^
+  --workspace "output/workspace"
+```
 
-Use this when you already have buyer data prepared.
+One-click buyer research mode:
 
-### Mode 2: Auto-research mode
+```bash
+python scripts/run_buyer_board_pipeline.py ^
+  --template "path/to/template.pptx" ^
+  --country "南非" ^
+  --procurement-need "动力传动" ^
+  --buyer-count 10 ^
+  --output "output/finished.pptx" ^
+  --preview-dir "output/previews" ^
+  --workspace "output/workspace"
+```
 
-Use this when you only have:
+### Buyer-briefing preset
 
-- a PPT template
-- a target country
-- a procurement need
+Use this for compact `买家商情` templates where each slide contains one category and 6 buyer entries.
 
-The pipeline will:
+```bash
+python ppt-template-batch/scripts/fill_buyer_briefing_pages.py ^
+  "path/to/template.pptx" ^
+  "path/to/briefing-pages.json" ^
+  "output/buyer-briefing.pptx"
+```
 
-1. generate `layout-config.json` if you do not provide one
-2. research buyers and generate `buyers.json`
-3. try to fetch public logo and right-side visuals from each buyer's public web presence
-4. fill the PPT
-5. place verified image assets when available
-6. remove placeholder images when assets are unavailable
-
-### Mode 3: Buyer briefing mode
-
-Use this for compact `买家商情` templates where each slide contains one category title and 6 buyer entries. This mode preserves the original PowerPoint run-level text styles instead of clearing and rebuilding text boxes.
+`briefing-pages.json` should contain pages with `title` and 6 buyers. Each buyer should include `name`, `summary`, and `products`. The script preserves run-level text styles so the output stays close to the original template.
 
 ## Dependencies
 
@@ -65,19 +109,13 @@ Install dependencies first:
 pip install -r requirements.txt
 ```
 
-Optional but recommended for browser-enhanced asset mode:
+Optional for browser-enhanced asset discovery:
 
 ```bash
 playwright install chromium
 ```
 
-Set your API key for auto-research mode:
-
-```bash
-set OPENAI_API_KEY=your_key_here
-```
-
-PowerShell:
+Set your API key only when using buyer research or AI visual fallback:
 
 ```powershell
 $env:OPENAI_API_KEY="your_key_here"
@@ -89,116 +127,31 @@ Optional model override:
 set BUYER_RESEARCH_MODEL=gpt-4.1
 ```
 
-## One-click usage
-
-### Existing buyers.json mode
-
-```bash
-python scripts/run_buyer_board_pipeline.py ^
-  --template "buyer-board-layout/assets/examples/buyer-manual-reference.pptx" ^
-  --buyers "buyer-board-layout/assets/examples/sa-buyers.json" ^
-  --layout-config "buyer-board-layout/assets/examples/sa-layout-config.json" ^
-  --output "output/finished.pptx" ^
-  --preview-dir "output/previews" ^
-  --workspace "output/workspace"
-```
-
-### Auto-research mode
-
-```bash
-python scripts/run_buyer_board_pipeline.py ^
-  --template "path/to/template.pptx" ^
-  --country "南非" ^
-  --procurement-need "动力传动" ^
-  --output "output/finished.pptx" ^
-  --preview-dir "output/previews" ^
-  --workspace "output/workspace"
-```
-
-Optional controls:
-
-- `--buyer-count 5`
-- `--layout-config path/to/layout-config.json`
-- `--cover-title "南非动力传动买家"`
-- `--cover-country "国家：南非"`
-- `--content-title "南非动力传动买家"`
-- `--openai-model gpt-4.1`
-- `--asset-mode light|auto|browser`
-- `--browser-timeout-ms 18000`
-- `--enable-ai-visual-fallback`
-
-Asset mode guidance:
-
-- `light`: current lightweight mode, no browser rendering, lowest runtime cost
-- `auto`: keep lightweight mode first, then use Playwright only when logo or right-side image is still missing
-- `browser`: use Playwright-first rendered-page extraction, highest fetch success rate but heavier runtime
-
-Token and runtime notes:
-
-- `--asset-mode auto` and `--asset-mode browser` do not materially increase OpenAI token usage by themselves
-- browser-enhanced modes do increase local runtime, dependency size, memory usage, and network requests
-- `--enable-ai-visual-fallback` is the step that may add extra model cost when public right-side images cannot be found
-
-### Buyer briefing mode
-
-```bash
-python buyer-board-layout/scripts/fill_buyer_briefing_pages.py ^
-  "path/to/template.pptx" ^
-  "path/to/briefing-pages.json" ^
-  "output/buyer-briefing.pptx"
-```
-
-`briefing-pages.json` should contain pages with `title` and 6 buyers. Each buyer should include `name`, `summary`, and `products`. The `products` value may already include `采购品类：`; if it does not, the script adds it automatically.
-
-Important guardrail:
-
-- the current workflow does not AI-generate buyer logos
-- AI fallback only applies to the right-side visual, and only when `--enable-ai-visual-fallback` is explicitly enabled
-
 ## WorkBuddy and Windows diagnostics
 
-If auto-research, website image fetching, or PowerPoint export behaves differently after downloading the skill through WorkBuddy, run:
+If a run behaves differently after downloading through WorkBuddy, run:
 
 ```bash
-python buyer-board-layout/scripts/doctor.py
+python ppt-template-batch/scripts/doctor.py
 ```
 
 The report checks:
 
-- whether `OPENAI_API_KEY` is visible from the current runner
-- whether required Python modules are installed
-- whether Playwright is installed and Chromium can launch successfully
-- whether public website requests are allowed
-- whether PowerPoint COM automation is available
+- Python modules
+- `OPENAI_API_KEY` visibility
+- public website access
+- Playwright and Chromium runtime
+- PowerPoint COM automation
 
-If Python `urllib` requests are blocked but `curl` works in your environment, enable the optional curl fallback:
+If Python `urllib` requests are blocked but `curl` works, enable:
 
 ```powershell
 $env:BUYER_BOARD_ENABLE_CURL_FALLBACK="1"
 ```
 
-The unified pipeline also writes `pipeline_failure.json` inside `--workspace` when a key stage fails.
+## Buyer asset recovery
 
-## WorkBuddy local rescue for real assets
-
-If a WorkBuddy-downloaded run finishes with missing real website assets, blank logo slots, or AI right-side visuals only, the most common reason is that the WorkBuddy sandbox blocked outbound HTTPS requests during the asset-fetch stage.
-
-Recommended fix: rerun only the asset stage locally in your own PowerShell or terminal, outside the WorkBuddy sandbox.
-
-1. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
-
-2. Check local readiness:
-
-```bash
-python buyer-board-layout/scripts/doctor.py
-```
-
-3. Run local real-asset recovery against the existing workspace:
+If a buyer-board run finishes with missing real logos or website visuals because the sandbox blocked network access, rerun only the asset stage locally:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/recover_real_assets.ps1 `
@@ -214,106 +167,51 @@ python scripts/recover_real_assets.py ^
   --asset-mode browser
 ```
 
-This recovery pass will:
+## Output artifacts
 
-- reuse `buyers.generated.json` or the best buyers JSON found in the workspace
-- refetch official logo and right-side website visuals locally
-- regenerate `asset_fetch_report.json`
-- rebuild a recovered PPT as `recovered-real-assets.pptx`
+Depending on the workflow, the workspace may contain:
 
-If you only want the refreshed JSON and downloaded assets, without regenerating the PPT:
-
-```bash
-python scripts/recover_real_assets.py ^
-  --workspace "output/workspace" ^
-  --asset-mode browser ^
-  --skip-ppt-refresh
-```
-
-If you no longer have the original workspace folder, rerun the full pipeline locally with the original template, country, and procurement need, and prefer `--asset-mode browser`.
-
-## Workspace outputs
-
-The unified pipeline may produce these reusable artifacts inside `--workspace`:
-
-- `buyers.generated.json`: AI-researched buyer list
-- `buyers.with-assets.json`: buyer list enriched with fetched asset paths
-- `buyers.recovered-assets.json`: local second-pass buyer list after real-asset recovery
-- `layout-config.generated.json`: starter layout config when one is not supplied
-- `asset-cache.json`: site-level asset cache to avoid duplicate fetching
-- `asset_fetch_report.json`: per-buyer hit report for logo and right-side visual sourcing
-- `buyer-board-buyers.recovered.json`: recovered buyers JSON copied into the local workspace for PPT image replacement
-- `buyer-board-doctor-report.json`: optional runtime diagnostic report
+- `layout-config.generated.json`: starter layout mapping
+- `records.json`, `buyers.generated.json`, or `briefing-pages.json`: structured input data
+- `buyers.with-assets.json`: buyer data enriched with fetched image paths
+- `asset-cache.json`: per-site asset cache
+- `asset_fetch_report.json`: per-buyer image hit report
 - `pipeline_failure.json`: failure details when a pipeline stage fails
-- `assets/`: downloaded public image assets
-- `research/`: intermediate buyer research files
+- `assets/`: downloaded public assets
+- `previews/`: exported slide previews when available
 
-## Current boundary
+## Current boundaries
 
-The current workflow can automatically generate:
-
-- buyer name
-- website
-- procurement products
-- 120-Chinese-character company bio
-
-It can also continue the PPT pipeline even when no verified logo or right-side image is available.
-
-Current limitations:
-
-- public buyer text research is automated but still depends on model quality and source availability
-- public website asset fetching is automatic but best-effort and depends on local network permissions
-- browser-enhanced asset fetching improves dynamic-site coverage but still depends on local browser runtime and network permissions
-- WorkBuddy may complete the PPT while failing the real-asset fetch stage if its sandbox blocks outbound HTTPS
-- social/profile/map pages are fallback sources, not the first-choice primary source for brand assets
-- AI right-side visual fallback is opt-in and requires a valid OpenAI API key
-- when no verified image is available, the workflow clears placeholder graphics instead of inventing a risky fake logo
-- if a logo asset is SVG, the Python fallback path still requires a working cairo runtime in addition to `cairosvg`
+- The generic PPT direction is active, but many bundled scripts still carry buyer-board names for compatibility.
+- Arbitrary PPT templates still require first-run decomposition and mapping verification.
+- Public website asset fetching is best-effort and depends on local network permissions.
+- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight.
+- AI right-side visual fallback is opt-in and does not generate logos.
+- When no verified image is available, the workflow should clear risky stale placeholders rather than inventing fake brand assets.
 
 ## Privacy note
 
-Do not publish client-specific finished decks, private sample projects, generated preview outputs, or real customer deliverables in the public repo or release assets.
+Do not publish client-specific finished decks, private templates, generated previews, or real customer deliverables in this public repo.
 
-When sharing this skill publicly, prefer:
+When sharing examples, prefer:
 
 - blank or redacted templates
-- generic `layout-config.json` samples
-- sanitized `buyers.json` examples
-- workflow documentation rather than real customer deliverables
+- generic layout-config samples
+- sanitized JSON examples
+- workflow documentation rather than real customer outputs
 
-## Layout-config generator scaffold
+## Roadmap
 
-Use the generator when you have a new manually adjusted PPT and want a starter config:
+The next direction is to make the generic PPT layer more explicit:
 
-```bash
-python buyer-board-layout/scripts/generate_layout_config.py ^
-  --template "path/to/reference.pptx" ^
-  --output "path/to/layout-config.json" ^
-  --cover-title "请替换封面标题" ^
-  --cover-country "国家：请替换" ^
-  --content-title "请替换内容页标题"
-```
-
-The generator currently:
-
-- detects likely cover title and country text boxes
-- detects the first content table and row labels
-- detects likely content title and footer text boxes
-- extracts per-slide logo and right-image slot heuristics
-
-This output is a starter scaffold and should still be visually checked before production use.
+- rename or alias the skill/repo to a generic PPT batch name after compatibility impact is reviewed
+- add a generic `run_ppt_batch_pipeline.py` entrypoint
+- add a broader layout-config generator for non-buyer templates
+- add reusable validators for slide count, field coverage, style preservation, and stale placeholders
+- keep buyer-board and buyer-briefing as bundled presets
 
 ## Sharing
 
-This repository is public. Other users can open it, clone it, download the ZIP, and install or adapt the skill.
-
-## Feedback loop
-
-Use:
-
-- `Issues` for bugs and feature requests
-- `Discussions` for general feedback, usage reports, and template-sharing
-- `Releases` for stable downloadable versions
-
+This repository is public. Other users can clone it, download the ZIP, install the skill, and submit feedback through Issues or Discussions.
 
 
