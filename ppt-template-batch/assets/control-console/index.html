@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PPT 模板批处理控台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">P</span><div><strong>PPT 模板批处理</strong><small>本地项目控台</small></div></div>
+    <div class="top-actions">
+      <button id="open-model-settings" class="top-button" type="button">模型设置</button>
+      <div class="top-status"><span class="status-dot"></span><span>本机运行</span></div>
+    </div>
+  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-head"><span class="eyebrow">项目工作区</span><span id="project-count" class="count">0</span></div>
+      <form id="new-project-form" class="new-project">
+        <select id="new-project-mode" aria-label="项目类型">
+          <option value="generic">通用PPT</option>
+          <option value="buyer_board">买家看板预设</option>
+          <option value="buyer_briefing">买家商情预设</option>
+        </select>
+        <input id="new-project-name" type="text" maxlength="80" placeholder="输入新项目名称" required>
+        <button type="submit" title="新建项目">新建</button>
+      </form>
+      <nav id="project-list" class="project-list" aria-label="项目列表"></nav>
+      <div class="sidebar-foot"><span>文件只保存在本机</span><button id="refresh-projects" class="text-button" type="button">刷新</button></div>
+    </aside>
+    <main class="main">
+      <section id="empty-state" class="empty-state">
+        <div class="empty-symbol">PPTX</div><h1>从一个模板开始</h1>
+        <p>新建项目后上传 PPTX 模板，录入或搜索业务资料，再从同一处导出成品。</p>
+      </section>
+      <section id="workspace" class="workspace hidden">
+        <div class="workspace-head">
+          <div><span class="eyebrow">当前项目</span><h1 id="project-title"></h1><div id="project-meta" class="project-meta"></div></div>
+          <label class="upload-button"><input id="template-file" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation">上传模板</label>
+        </div>
+        <div class="step-strip" aria-label="工作流状态">
+          <span id="step-template" class="step">1 模板</span><span id="step-records" class="step">2 数据</span>
+          <span id="step-layout" class="step">3 映射</span><span id="step-export" class="step">4 导出</span>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="records" type="button">数据录入</button>
+          <button class="tab" data-tab="layout" type="button">版式映射</button>
+          <button class="tab" data-tab="structure" type="button">模板结构</button>
+          <button class="tab" data-tab="export" type="button">导出</button>
+        </div>
+
+        <section id="panel-records" class="panel active data-panel">
+          <div class="data-view-bar">
+            <div class="segmented" aria-label="数据编辑模式">
+              <button class="segment active" data-data-view="buyer" type="button">买家表单</button>
+              <button class="segment" data-data-view="json" type="button">高级 JSON</button>
+            </div>
+            <span id="records-summary">0 家买家</span>
+          </div>
+
+          <div id="buyer-data-view">
+            <div class="research-band">
+              <div class="research-heading">
+                <div><span class="eyebrow">AI 搜索买家</span><strong>按目标市场生成并核验采购商资料</strong></div>
+                <span id="research-model-status" class="model-badge">模型未配置</span>
+              </div>
+              <div class="research-fields">
+                <label>国家或地区<input id="research-country" type="text" placeholder="例如：沙特阿拉伯"></label>
+                <label class="need-field">采购需求<input id="research-need" type="text" placeholder="例如：电机、减速机、工业传动设备"></label>
+                <label>买家数量<input id="research-count" type="number" min="1" max="30" value="10"></label>
+                <button id="run-research" class="research-action" type="button">搜索并生成</button>
+              </div>
+              <div class="research-options">
+                <label class="check-row"><input id="fetch-assets" type="checkbox"><span>同步抓取企业 Logo 和官网产品图</span></label>
+                <label class="check-row"><input id="ai-visual-fallback" type="checkbox"><span>缺图时允许 AI 生成右侧配图</span></label>
+              </div>
+              <div id="research-progress" class="research-progress hidden">
+                <div><span id="research-status-dot" class="progress-dot"></span><strong id="research-status">准备搜索</strong></div>
+                <pre id="research-log"></pre>
+              </div>
+            </div>
+
+            <div class="buyer-toolbar">
+              <div><strong>买家信息</strong><span>企业名称、官网、采购产品和120字企业简介</span></div>
+              <div class="toolbar-actions">
+                <button id="add-buyer" class="secondary-action" type="button">添加买家</button>
+                <button id="save-buyers" type="button">保存买家资料</button>
+              </div>
+            </div>
+            <div id="buyer-list" class="buyer-list"></div>
+          </div>
+
+          <div id="json-data-view" class="hidden">
+            <div class="panel-toolbar">
+              <div><strong>records.json</strong><span>面向高级用户和调试场景</span></div>
+              <button id="save-records" type="button">保存 JSON</button>
+            </div>
+            <textarea id="records-editor" class="json-editor" spellcheck="false" aria-label="records.json 编辑器"></textarea>
+          </div>
+        </section>
+
+        <section id="panel-layout" class="panel">
+          <div class="panel-toolbar"><div><strong>layout-config.json</strong><span id="layout-summary">尚未配置映射</span></div><button id="save-layout" type="button">保存映射</button></div>
+          <textarea id="layout-editor" class="json-editor" spellcheck="false" aria-label="layout-config.json 编辑器"></textarea>
+        </section>
+        <section id="panel-structure" class="panel">
+          <div class="panel-toolbar"><div><strong>模板结构</strong><span id="structure-summary">请先上传模板</span></div></div>
+          <div id="structure-view" class="structure-view"></div>
+        </section>
+        <section id="panel-export" class="panel">
+          <div class="export-grid">
+            <div class="export-form">
+              <span class="eyebrow">导出设置</span>
+              <label>输出文件名<input id="output-filename" type="text" value="finished.pptx"></label>
+              <label class="check-row"><input id="strict-mode" type="checkbox"><span>严格校验必填字段</span></label>
+              <button id="run-export" class="primary-action" type="button">生成 PPTX</button>
+              <p class="hint">买家看板项目会自动使用买家专用排版与图片管线。</p>
+            </div>
+            <div class="run-result">
+              <div class="result-head"><span class="eyebrow">运行结果</span><span id="job-status" class="job-status idle">未运行</span></div>
+              <pre id="job-log">等待导出任务。</pre>
+            </div>
+          </div>
+          <div class="outputs">
+            <div class="panel-toolbar"><div><strong>历史成品</strong><span id="outputs-summary">0 个文件</span></div></div>
+            <div id="output-list" class="output-list"></div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="model-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="model-title">
+    <div class="modal-backdrop" data-close-model></div>
+    <section class="modal-dialog">
+      <div class="modal-head"><div><span class="eyebrow">连接配置</span><h2 id="model-title">模型 API 设置</h2></div><button class="close-button" data-close-model type="button" title="关闭">&times;</button></div>
+      <div class="feature-switches">
+        <label class="feature-toggle"><input id="enable-research-model" type="checkbox" checked><span><strong>买家资料生成</strong><small>按国家和采购需求生成或整理买家资料，需要文本模型 Key。</small></span></label>
+        <label class="feature-toggle"><input id="enable-visual-model" type="checkbox"><span><strong>AI 生图补图</strong><small>官网缺图时才调用 AI 生图，不勾选则只抓取现有网站素材。</small></span></label>
+        <label class="feature-toggle"><input id="enable-layout-model" type="checkbox"><span><strong>智能模板分析</strong><small>用于后续自动识别复杂模板版式，当前可按需关闭。</small></span></label>
+      </div>
+      <label class="unified-toggle"><input id="use-unified-model" type="checkbox" checked><span><strong>统一模型配置</strong><small>勾选后文本、图片和版式能力共用同一组 API Key；取消后可分别配置。</small></span></label>
+      <div id="unified-model-fields" class="model-section">
+        <div class="model-row provider-row">
+          <label>服务商<select id="unified-provider" data-provider="unified"></select></label>
+          <label>Base URL<input id="unified-base-url" type="text" placeholder="https://api.deepseek.com"></label>
+        </div>
+        <label>统一 API Key<input id="unified-api-key" type="password" autocomplete="off" placeholder="sk-..."></label>
+      </div>
+      <div id="no-model-note" class="model-section hidden">
+        <strong>手动/本地模式</strong>
+        <p>当前未启用任何模型能力。上传模板、手动录入数据、编辑 JSON 和导出 PPT 均不需要 API Key。</p>
+      </div>
+      <div class="model-sections role-models">
+        <div class="model-section" data-role-section="research">
+          <strong>1. 买家资料生成</strong>
+          <div class="model-row provider-row split-only"><label>服务商<select id="research-provider" data-provider="research"></select></label><label>Base URL<input id="research-base-url" type="text"></label></div>
+          <div class="model-row split-only"><label>API Key<input id="research-api-key" type="password" autocomplete="off" placeholder="sk-..."></label></div>
+          <div class="model-row mode-row"><label>检索模式<select id="research-mode"><option value="model_only">仅文本模型生成/整理</option><option value="openai_web_search">OpenAI 内置联网搜索</option></select></label><label>模型<input id="research-model" list="research-model-options" type="text" value="deepseek-chat"></label><button class="secondary-action fetch-models" data-fetch-models="research" type="button">获取模型列表</button><button class="secondary-action probe-model" data-probe-model="research" type="button">&#35786;&#26029;&#36830;&#25509;</button></div>
+          <datalist id="research-model-options"></datalist>
+        </div>
+        <div class="model-section" data-role-section="visual">
+          <strong>2. AI 生图补图</strong>
+          <div class="model-row provider-row split-only"><label>服务商<select id="visual-provider" data-provider="visual"></select></label><label>Base URL<input id="visual-base-url" type="text"></label></div>
+          <div class="model-row"><label class="split-only">API Key<input id="visual-api-key" type="password" autocomplete="off" placeholder="sk-..."></label><label>模型<input id="visual-model" list="visual-model-options" type="text" value="gpt-image-1"></label><button class="secondary-action fetch-models" data-fetch-models="visual" type="button">获取模型列表</button></div>
+          <datalist id="visual-model-options"></datalist>
+        </div>
+        <div class="model-section optional" data-role-section="layout">
+          <strong>3. 智能模板分析</strong>
+          <div class="model-row provider-row split-only"><label>服务商<select id="layout-provider" data-provider="layout"></select></label><label>Base URL<input id="layout-base-url" type="text"></label></div>
+          <div class="model-row"><label class="split-only">API Key<input id="layout-api-key" type="password" autocomplete="off" placeholder="可留空"></label><label>模型<input id="layout-model" list="layout-model-options" type="text" value="deepseek-chat"></label><button class="secondary-action fetch-models" data-fetch-models="layout" type="button">获取模型列表</button></div>
+          <datalist id="layout-model-options"></datalist>
+          <p>仅在需要模型辅助拆解复杂 PPT 模板时启用；普通模板上传和手动映射不需要。</p>
+        </div>
+      </div>
+      <div class="security-note">API Key 仅保存在本次本地控台进程内，关闭或重启后自动清除。</div>
+      <div class="modal-actions"><button class="secondary-action" data-close-model type="button">取消</button><button id="save-model-settings" type="button">保存设置</button></div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
