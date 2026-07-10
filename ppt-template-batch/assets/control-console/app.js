@@ -711,12 +711,19 @@ async function pollResearch(jobId) {
     }
     $("#run-research").disabled = false;
     if (job.status === "completed") {
+      const count = job.report_data && Number(job.report_data.buyer_count || 0);
+      if (!count) {
+        showToast("搜索没有返回可回填买家，请调整筛选条件后重试", true);
+        $("#research-progress").className = "research-progress failed";
+        $("#research-status").textContent = "没有生成可回填买家";
+        return;
+      }
       const slug = state.current.project.slug;
       await loadProject(slug);
       $("#research-progress").className = "research-progress completed";
       $("#research-status").textContent = "搜索完成，已回填买家表单";
       $("#research-log").textContent = researchJobText(job);
-      showToast("已生成 " + job.report_data.buyer_count + " 家买家资料");
+      showToast("已生成 " + count + " 家买家资料");
     } else {
       showToast(job.stderr || "买家搜索失败", true);
     }

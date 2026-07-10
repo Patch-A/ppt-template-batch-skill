@@ -1036,6 +1036,11 @@ class ConsoleState:
                     stderr_parts.append("素材抓取失败，已保留买家文字资料。")
 
             buyers = read_json(result_json)
+            if not isinstance(buyers, list) or not buyers:
+                raise ValueError(
+                    "本次搜索没有生成可回填的买家。请放宽排除企业类型，补充优先行业/应用场景，"
+                    "或切换到支持联网搜索的模型后重试。系统已保留现有买家表单，不会用空结果覆盖。"
+                )
             saved = self.save_buyer_data(str(job["project"]), {
                 "country": job["country"],
                 "procurement_need": job["procurement_need"],

@@ -238,6 +238,7 @@ Selection rules:
 - Build a diverse candidate pool before ranking. Include multiple buyer types when appropriate.
 - Confirm the company is local to, headquartered in, or materially operating in the target country.
 - The target is actual buyers/procurement accounts: end users that consume the product in operations, distributors/importers/resellers that buy for resale, EPC/project developers/integrators/maintenance contractors that buy for projects, or large groups with centralized procurement.
+- For capital equipment such as CNC machines, laser machines, packaging equipment, textile machinery, food-processing equipment, or machine tools, prioritize factories and service providers that use the equipment to make their own products or provide contract manufacturing. Also consider local importers, distributors, machine-tool dealers, industrial equipment integrators, maintenance/service companies, technical training centers, and large industrial groups with machining workshops.
 - Do not list a manufacturer only because it is in the same industry. A manufacturer is valid only when it likely purchases the requested product as production equipment, process equipment, components, consumables, spare parts, or resale inventory.
 - Exclude or downgrade direct competing OEMs whose main business is making and selling the same requested product, unless public business fit suggests importing/distribution or internal use.
 - The products field must describe what the company would buy, not what it sells.
@@ -492,6 +493,21 @@ def fetch_buyers(
         )
     else:
         buyers = fetch_json_with_chat(api_key, resolved_base_url, model_name, shortlist_prompt)
+    if not buyers and candidates:
+        buyers = candidates[:buyer_count]
+        for item in buyers:
+            notes = str(item.get("research_notes", "") or "").strip()
+            item["research_notes"] = (notes + "；二阶段筛选返回空，已使用候选池兜底，需人工复核。").strip("；")
+            item.setdefault("confidence", "low")
+            item.setdefault("risks", "Shortlist stage returned no qualified buyers; verify fit and official sources manually.")
+            for score_key in ("fit_score", "demand_score", "import_score", "verification_score", "total_score"):
+                item.setdefault(score_key, 50)
+    if not buyers:
+        raise RuntimeError(
+            "Buyer research returned 0 candidates. "
+            "Try relaxing excluded company types, adding preferred application industries, "
+            "or using OpenAI web search when official/source evidence is required."
+        )
     return buyers, {
         "provider": provider_name,
         "base_url": resolved_base_url,
