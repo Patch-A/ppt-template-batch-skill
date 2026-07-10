@@ -10,6 +10,7 @@ This repository is focused on **generic PPT template automation**. Buyer-board a
 - `ppt-template-batch/scripts/`: reusable PPT decomposition, text filling, image placement, diagnostics, and buyer preset scripts.
 - `ppt-template-batch/references/`: workflow rules for generic PPT batch processing and buyer-specific presets.
 - `scripts/run_ppt_batch_pipeline.py`: generic one-click pipeline for config-driven PPT filling.
+- `scripts/run_control_console.py`: local browser control console for project setup, editing, and export.
 - `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
 - `scripts/recover_real_assets.py`: buyer-board asset recovery helper when sandboxed runs cannot fetch real web assets.
 
@@ -25,6 +26,34 @@ Use this skill when you want to turn any PPT/PPTX template into a repeatable bat
 6. Replace approved image placeholders without touching fixed design elements.
 7. Export one or many PPT files.
 8. Verify slide count, required fields, missing records, encoding, and obvious layout regressions.
+
+## Local control console
+
+A browser-based local console is included for project management, template upload, preset selection, buyer-form entry, country plus procurement-need research, session-only model provider settings, upstream model-list fetching, JSON editing, slide-structure inspection, export controls, reports, and finished-file downloads.
+
+~~~powershell
+python scripts/run_control_console.py
+~~~
+
+The console opens on http://127.0.0.1:5310/ by default and stores projects under console-projects/. It has no frontend build dependency and continues to use the native Python/PPTX pipeline.
+
+When creating a project, choose one of the built-in presets:
+
+- Generic PPT: arbitrary template decomposition and config-driven filling.
+- Buyer Board Preset: country plus procurement need, buyer profiles, logos, website/product visuals, and one-buyer-per-page layouts.
+- Buyer Briefing Preset: compact category pages with a dedicated form: one category per slide and 6 buyers per slide.
+
+
+### Capability-based model settings
+
+The console does not require API keys for every project. API keys are only needed when a selected capability uses a remote model.
+
+- Manual data entry, JSON/Excel import, template inspection, PPT filling, and PPT export run locally and do not need a model key.
+- Buyer profile generation needs a text model only when the Buyer Research capability is enabled.
+- AI visual fallback needs an image-capable model only when the AI Visual capability is enabled.
+- Intelligent template analysis is optional; current template decomposition and export use local rules by default.
+
+Buyer research defaults to `model_only`, which uses OpenAI-compatible `/chat/completions` and works with DeepSeek, Qwen, GLM, Kimi, SiliconFlow, OpenRouter, Ollama, LM Studio, and custom compatible endpoints. OpenAI built-in web search is an explicit opt-in mode, not the default.
 
 ## Supported modes
 
@@ -46,6 +75,7 @@ The current repo includes the workflow guidance for this mode in:
 - `ppt-template-batch/references/layout-config-schema.md`
 - `ppt-template-batch/scripts/fill_ppt_from_records.py`
 - `scripts/run_ppt_batch_pipeline.py`
+- `scripts/run_control_console.py`
 - `ppt-template-batch/scripts/generate_layout_config.py`
 
 Single generic run:
@@ -139,16 +169,23 @@ Optional for browser-enhanced asset discovery:
 playwright install chromium
 ```
 
-Set your API key only when using buyer research or AI visual fallback:
+Set API keys only when using buyer research or AI visual fallback. The control console stores keys only in the current local process and never writes them to project files.
+
+The console supports these provider modes:
+
+- OpenAI: supports normal chat completions and the optional OpenAI built-in web search mode when the selected model has access.
+- Domestic and compatible text providers: DeepSeek, Qwen, Zhipu GLM, Kimi, Doubao, MiniMax, SiliconFlow, OpenRouter, Ollama, LM Studio, and custom OpenAI-compatible endpoints use the `/chat/completions` path for text research and structuring.
+- Image providers: enable only when AI visual fallback is selected. If not selected, website/logo/product-image fetching runs without a model key.
+
+Use Model Settings in the console to select provider, Base URL, API Key, and model. Click Fetch models to call the upstream `/models` endpoint and populate model candidates. If the provider does not expose `/models` or the request fails, the console keeps built-in fallback model candidates such as `deepseek-chat`, `qwen-plus`, and `glm-4-plus`.
+
+Optional CLI environment variables remain supported:
 
 ```powershell
 $env:OPENAI_API_KEY="your_key_here"
-```
-
-Optional model override:
-
-```bash
-set BUYER_RESEARCH_MODEL=gpt-4.1
+$env:BUYER_RESEARCH_PROVIDER="deepseek"   # openai, deepseek, qwen, zhipu, kimi, siliconflow, openrouter, ollama, lmstudio, or compatible
+$env:BUYER_RESEARCH_BASE_URL="https://api.deepseek.com"
+$env:BUYER_RESEARCH_MODEL="deepseek-chat"
 ```
 
 ## WorkBuddy and Windows diagnostics
@@ -241,3 +278,7 @@ The next direction is to deepen generic PPT support:
 This repository is public. Other users can clone it, download the ZIP, install the skill, and submit feedback through Issues or Discussions.
 
 
+
+## Actual buyer selection
+
+Buyer research should not treat every manufacturer as a buyer. Prefer actual procurement accounts: end users, distributors/importers/resellers, EPC or project developers, integrators, maintenance contractors, and manufacturers only when they clearly purchase the requested product as equipment, components, consumables, spare parts, or resale inventory. Asset fetching defaults to lightweight HTML parsing; browser fallback is opt-in to avoid slow or stuck website crawls.

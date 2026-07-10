@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,24 @@ def fill_slide(slide, page: dict[str, Any], mapping: dict[str, Any]) -> None:
         fill_slot(slide, slot, buyer)
 
 
+def duplicate_slide(presentation: Presentation, source_index: int):
+    source_slide = presentation.slides[source_index]
+    blank_layout = presentation.slide_layouts[6]
+    new_slide = presentation.slides.add_slide(blank_layout)
+    for shape in source_slide.shapes:
+        new_slide.shapes._spTree.insert_element_before(copy.deepcopy(shape.element), "p:extLst")
+    for rel in source_slide.part.rels.values():
+        if "notesSlide" in rel.reltype:
+            continue
+        if rel.rId in new_slide.part.rels:
+            continue
+        try:
+            new_slide.part.rels.add_relationship(rel.reltype, rel._target, rel.rId)
+        except Exception:
+            pass
+    return new_slide
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Fill buyer-briefing PPT pages while preserving template run-level text styles."
@@ -106,6 +125,7 @@ def main() -> int:
     parser.add_argument("pages_json", help="JSON with pages: title + 6 buyers per page")
     parser.add_argument("output", help="Output PPTX path")
     parser.add_argument("--layout-config", help="Optional briefing layout mapping JSON")
+    parser.add_argument("--report", help="Optional export report JSON path")
     args = parser.parse_args()
 
     pages = load_json(Path(args.pages_json))
@@ -114,8 +134,8 @@ def main() -> int:
         mapping = load_json(Path(args.layout_config))
 
     prs = Presentation(args.template)
-    if len(pages) > len(prs.slides):
-        raise ValueError("Template does not have enough slides. Duplicate the briefing page layout first.")
+    while len(pages) > len(prs.slides):
+        duplicate_slide(prs, len(prs.slides) - 1)
 
     for index, page in enumerate(pages):
         fill_slide(prs.slides[index], page, mapping)
@@ -123,6 +143,15 @@ def main() -> int:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(output_path)
+    if args.report:
+        report_path = Path(args.report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps({
+            "ok": True,
+            "pipeline_mode": "buyer_briefing",
+            "page_count": len(pages),
+            "output": str(output_path),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 

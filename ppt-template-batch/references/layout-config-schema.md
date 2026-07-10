@@ -101,3 +101,7 @@ Or an object:
   ]
 }
 ```
+
+## Beginner Console Usage
+
+In the control console, non-technical users should use the example buttons first. The key idea is: `shape_index` is the element number shown in Template Structure; `field` is the data key from `records.json`; `repeat` means duplicate one template slide for many records; `images` means replace an image placeholder while keeping its bounds.

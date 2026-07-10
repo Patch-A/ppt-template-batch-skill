@@ -45,3 +45,7 @@ The bundled script includes the mapping used by the 2026 India buyer-briefing te
 - buyer 6: summary shape 22, products shape 24
 
 If a new template differs, pass `--layout-config` with the same fields as the default mapping.
+
+## Console preset
+
+The local control console has a dedicated Buyer Briefing Form. Do not force users into raw JSON for this preset. The form stores `records.json` as an object with `globals` and `pages`; each page contains `title` and 6 `buyers`. The export path should call `scripts/fill_buyer_briefing_pages.py` directly, not the generic filler.

@@ -62,7 +62,7 @@ The workflow should generate `buyers.json` first.
 Research rules:
 
 1. Prefer real companies with official sites.
-2. Prefer actual buyers, distributors, project developers, integrators, manufacturers, or large procurement entities.
+2. Prefer actual buyers: end users, distributors/importers/resellers, project developers, integrators, maintenance contractors, or large procurement entities. Include manufacturers only when they have a clear internal-use, component, spare-part, consumable, or resale procurement scenario.
 3. Generate a 120-Chinese-character bio for each buyer.
 4. Normalize the website to domain only.
 5. Leave image paths empty when no verified asset is available.
@@ -117,3 +117,11 @@ If no asset is available:
 - is the right-side image visually filled and balanced when present
 - were placeholder graphics removed when no image asset was available
 - was the text-only draft used as input, rather than a previously exported final deck
+## Model API boundaries
+
+- Buyer research and verification require the research model API key only when the buyer-research capability is enabled.
+- Official website and image scraping do not require a model API key.
+- AI visual fallback requires the visual model API key only when AI-generated fallback images are enabled.
+- Template detection, layout-config generation, text filling, image placement, and PPTX export run locally by default.
+- Use one unified key when simplicity matters, or split research and visual keys when cost, permissions, or providers differ.
+- Keep template-analysis credentials optional until a template actually requires model-assisted decomposition.

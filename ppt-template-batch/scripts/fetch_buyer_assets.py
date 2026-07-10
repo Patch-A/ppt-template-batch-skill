@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -78,6 +79,7 @@ BROWSER_VIEWPORT_WIDTH = 1440
 BROWSER_VIEWPORT_HEIGHT = 1080
 BROWSER_WAIT_MS = 1200
 BROWSER_PAGE_LIMIT = 6
+FETCH_TIMEOUT_SECONDS = 8
 
 
 @dataclass
@@ -110,7 +112,8 @@ def candidate_base_urls(domain: str) -> list[str]:
     return [f"https://{clean}", f"http://{clean}"]
 
 
-def fetch_url(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
+def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
+    timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
     request = Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -124,7 +127,8 @@ def fetch_url(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
         return fetch_url_with_curl(url, timeout)
 
 
-def fetch_url_with_curl(url: str, timeout: int = 20) -> tuple[str, bytes, str]:
+def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
+    timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
     import subprocess
 
     result = subprocess.run(
@@ -835,6 +839,9 @@ def discover_assets_for_domain(
     if logo_candidates and visual_candidates:
         notes.append("browser_skip:auto_light_success")
         return final_url, logo_candidates, visual_candidates, notes
+    if not get_env_var("BUYER_BOARD_ENABLE_BROWSER_FALLBACK"):
+        notes.append("browser_skip:auto_browser_fallback_disabled")
+        return final_url, logo_candidates, visual_candidates, notes
 
     browser_url, browser_logos, browser_visuals, browser_notes = discover_assets_for_domain_browser(
         domain,
@@ -887,7 +894,7 @@ def maybe_generate_ai_visual(buyer: dict[str, Any], assets_dir: Path, enabled: b
     try:
         client = OpenAI(api_key=api_key)
         result = client.images.generate(
-            model="gpt-image-1",
+            model=get_env_var("BUYER_VISUAL_MODEL") or "gpt-image-1",
             prompt=prompt,
             size="1536x1024",
         )
@@ -1026,8 +1033,20 @@ def main() -> int:
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
-        default=18000,
+        default=8000,
         help="per-page browser render timeout in milliseconds when Playwright-enhanced asset mode is enabled",
+    )
+    parser.add_argument(
+        "--fetch-timeout-seconds",
+        type=int,
+        default=8,
+        help="per HTTP request timeout for lightweight asset fetching",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=int,
+        default=180,
+        help="soft total runtime budget; remaining buyers are skipped after this limit",
     )
     args = parser.parse_args()
 
@@ -1038,11 +1057,28 @@ def main() -> int:
     cache_path = Path(args.cache_file)
     report_path = Path(args.report_file)
 
+    global FETCH_TIMEOUT_SECONDS
+    FETCH_TIMEOUT_SECONDS = max(3, int(args.fetch_timeout_seconds))
     cache = load_cache(cache_path)
     buyers = load_json(buyers_path)
     enriched = []
     report_items = []
+    started = time.monotonic()
     for item in buyers:
+        if time.monotonic() - started > max(10, int(args.max_seconds)):
+            skipped = dict(item)
+            skipped["asset_fetch_notes"] = "skipped:asset_fetch_time_budget_exceeded"
+            enriched.append(skipped)
+            report_items.append({
+                "name": skipped.get("name", ""),
+                "website": skipped.get("website", ""),
+                "logo_hit": False,
+                "site_hit": False,
+                "site_source": "",
+                "asset_mode": args.asset_mode,
+                "notes": ["skipped:asset_fetch_time_budget_exceeded"],
+            })
+            continue
         buyer, report = process_buyer(
             dict(item),
             assets_dir,
@@ -1051,6 +1087,7 @@ def main() -> int:
             args.asset_mode,
             args.browser_timeout_ms,
         )
+        report["elapsed_seconds"] = round(time.monotonic() - started, 2)
         enriched.append(buyer)
         report_items.append(report)
 

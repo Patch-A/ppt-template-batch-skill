@@ -21,6 +21,23 @@ The core workflow is domain-neutral:
 
 Buyer boards and buyer briefings are built-in presets on top of this workflow, not the boundary of the skill.
 
+## Local Control Console
+
+Use the local console when the user wants a project-oriented browser workflow instead of direct command-line execution. Read references/control-console.md before starting it.
+
+From the repository root:
+
+~~~powershell
+python scripts/run_control_console.py
+~~~
+
+From an installed skill directory:
+
+~~~powershell
+python scripts/control_console.py
+~~~
+
+Keep the existing native PPTX template pipeline as the export engine. Use the console for preset selection, form entry, buyer research, session-only provider/model configuration, upstream model-list fetching, inspection, export, and run reporting. Treat Generic PPT as the default project type; use Buyer Board and Buyer Briefing only as presets.
 ## Workflow
 
 ### 1. Identify the template family
@@ -113,6 +130,7 @@ Use `scripts/fill_ppt_from_records.py` for generic text, table, placeholder, ima
 Treat images as a separate pass:
 
 - replace only approved placeholder slots
+- Asset fetching should stay bounded: use light HTML fetching by default, keep browser fallback opt-in for slow sites, and rely on `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
 - do not overwrite fixed design imagery
 - fit logos without distortion
 - crop or pad right-side visuals before placement so they do not overflow
@@ -132,7 +150,7 @@ Buyer-board preset expects:
 - optional `logo_path`
 - optional `site_image_path`
 
-If buyer data is missing and the user gives country plus procurement need, use `scripts/discover_buyer_profiles.py` to generate buyer profiles.
+If buyer data is missing and the user gives country plus procurement need, use `scripts/discover_buyer_profiles.py` to generate buyer profiles. Buyer research selection must favor actual procurement accounts: end users, distributors/importers/resellers, EPC/project developers, integrators, maintenance contractors, or manufacturers with a clear internal-use/component/resale purchase scenario. Do not treat every manufacturer as a buyer by default.
 
 Buyer-briefing preset expects pages with:
 
@@ -155,7 +173,7 @@ Check:
 - PowerPoint COM availability
 - network access
 - Playwright browser runtime
-- `OPENAI_API_KEY` visibility when research or AI visual fallback is needed
+- model provider, Base URL, selected model, and API key visibility when research or AI visual fallback is needed
 
 ### 9. Verify every output
 
