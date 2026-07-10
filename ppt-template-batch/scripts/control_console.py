@@ -23,7 +23,11 @@ from urllib.request import Request, urlopen
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-BUYER_FIELDS = ("name", "country", "website", "products", "bio", "logo_path", "site_image_path", "research_notes")
+BUYER_FIELDS = (
+    "name", "country", "website", "products", "bio", "logo_path", "site_image_path", "research_notes",
+    "buyer_type", "demand_scenarios", "local_presence", "import_signal", "evidence", "confidence", "risks",
+)
+BUYER_SCORE_FIELDS = ("fit_score", "demand_score", "import_score", "verification_score", "total_score")
 
 BUYER_BRIEFING_DEFAULT_MAPPING: dict[str, Any] = {
     "title_shape": 5,
@@ -302,6 +306,7 @@ class ConsoleState:
             "assets": root / "assets",
             "output": root / "output",
             "workspace": root / "workspace",
+            "imports": root / "imports",
         }
 
     def require(self, slug: str) -> dict[str, Path]:
@@ -369,6 +374,14 @@ class ConsoleState:
             },
             "export": {"filename": "finished.pptx", "strict": False},
             "last_runs": [],
+            "research_strategy": {
+                "preferred_industries": "",
+                "excluded_company_types": "",
+                "custom_requirements": "",
+                "prefer_import_evidence": True,
+                "candidate_multiplier": 3,
+            },
+            "layout_instruction": "",
         }
         write_json(paths["project"], project)
         if inferred_mode == "buyer_briefing":
@@ -398,6 +411,7 @@ class ConsoleState:
                     "name": shape.name,
                     "type": str(shape.shape_type),
                     "text": text,
+                    "has_text_frame": bool(getattr(shape, "has_text_frame", False)),
                     "has_table": bool(getattr(shape, "has_table", False)),
                     "left": round(shape.left / 914400, 3),
                     "top": round(shape.top / 914400, 3),
@@ -602,6 +616,18 @@ class ConsoleState:
         if "research" not in project:
             project["research"] = {"country": "", "procurement_need": "", "buyer_count": 10}
             changed = True
+        if "research_strategy" not in project:
+            project["research_strategy"] = {
+                "preferred_industries": "",
+                "excluded_company_types": "",
+                "custom_requirements": "",
+                "prefer_import_evidence": True,
+                "candidate_multiplier": 3,
+            }
+            changed = True
+        if "layout_instruction" not in project:
+            project["layout_instruction"] = ""
+            changed = True
         if changed:
             write_json(paths["project"], project)
         return {
@@ -625,6 +651,110 @@ class ConsoleState:
         paths = self.require(slug)
         write_json(paths["records"] if kind == "records" else paths["layout"], payload)
         self.touch(paths)
+
+    def import_records_document(self, slug: str, data: bytes, filename: str, instruction: str = "") -> dict[str, Any]:
+        paths = self.require(slug)
+        source_name = safe_filename(filename).replace(".pptx", Path(filename or "document.txt").suffix or ".txt")
+        suffix = Path(source_name).suffix.lower()
+        if suffix not in {".txt", ".md", ".csv", ".json", ".docx"}:
+            raise ValueError("资料导入支持 TXT、Markdown、CSV、JSON、DOCX。")
+        paths["imports"].mkdir(parents=True, exist_ok=True)
+        source_path = paths["imports"] / source_name
+        source_path.write_bytes(data)
+        project = read_json(paths["project"])
+        command = [
+            sys.executable,
+            str(skill_script("import_content_document.py")),
+            "--input", str(source_path),
+            "--output", str(paths["records"]),
+            "--project-name", str(project.get("name", "PPT项目")),
+            "--instruction", instruction,
+        ]
+        returncode, stdout, stderr = run_command(command)
+        if returncode != 0:
+            raise RuntimeError(stderr or stdout or "资料导入失败。")
+        self.touch(paths, {"mode": "generic" if project.get("mode") == "generic" else project.get("mode", "generic")})
+        records = read_json(paths["records"])
+        return {"records": records, "record_count": len(buyer_records(records)), "source": str(source_path.name)}
+
+    def field_candidates_from_records(self, data: Any) -> list[str]:
+        records = buyer_records(data)
+        seen: list[str] = []
+        for record in records:
+            for key, value in record.items():
+                if key in seen or isinstance(value, (dict, list)):
+                    continue
+                if str(value or "").strip():
+                    seen.append(key)
+        return seen or ["title", "content"]
+
+    def generate_layout_from_instruction(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        paths = self.require(slug)
+        instruction = str(payload.get("instruction", "") or "").strip()
+        if not instruction:
+            raise ValueError("请先填写自然语言版式要求。")
+        records = read_json(paths["records"])
+        project = read_json(paths["project"])
+        fields = self.field_candidates_from_records(records)
+        config: dict[str, Any] = {
+            "version": 1,
+            "record_key": "records",
+            "required_fields": fields[:2],
+            "notes": [
+                "Generated from natural-language mapping instructions in the local console.",
+                instruction,
+                "This is a starter mapping. Check shape_index values in Template Structure before production export.",
+            ],
+        }
+        inspection = self.inspect_template(paths["template"])
+        if inspection.get("ready") and inspection.get("slides"):
+            slides = inspection["slides"]
+            first_slide_texts = [
+                shape for shape in slides[0].get("shapes", [])
+                if shape.get("has_text_frame") and shape.get("text") and not shape.get("has_table")
+            ]
+            if first_slide_texts:
+                title_shape = max(first_slide_texts, key=lambda item: float(item.get("height") or 0))
+                config["slides"] = [{
+                    "slide_index": 1,
+                    "texts": [{"shape_index": title_shape["index"], "field": "globals.deck_title"}],
+                }]
+            else:
+                config["slides"] = []
+            repeat_slide = slides[1] if len(slides) > 1 else slides[0]
+            text_shapes = [
+                shape for shape in repeat_slide.get("shapes", [])
+                if shape.get("has_text_frame") and not shape.get("has_table")
+            ]
+            text_shapes.sort(key=lambda item: (float(item.get("top") or 0), float(item.get("left") or 0)))
+            repeat_texts = []
+            for shape, field in zip(text_shapes, fields):
+                repeat_texts.append({"shape_index": shape["index"], "field": field, "mode": "clear"})
+            if repeat_texts:
+                config["repeat"] = {
+                    "source_slide_index": repeat_slide["index"],
+                    "start_slide_index": repeat_slide["index"],
+                    "template_slide_count": 1,
+                    "trim_extra_template_slides": True,
+                    "texts": repeat_texts,
+                }
+                image_fields = [field for field in fields if re.search(r"image|photo|picture|logo|图片|配图|照片", field, re.I)]
+                picture_shapes = [shape for shape in repeat_slide.get("shapes", []) if "PICTURE" in str(shape.get("type", "")).upper()]
+                if image_fields and picture_shapes:
+                    config["repeat"]["images"] = [
+                        {
+                            "shape_index": shape["index"],
+                            "field": field,
+                            "fit": "contain" if "logo" in field.lower() else "cover",
+                            "clear_if_missing": True,
+                        }
+                        for shape, field in zip(picture_shapes, image_fields)
+                    ]
+        else:
+            config["slides"] = []
+        write_json(paths["layout"], config)
+        self.touch(paths, {"layout_instruction": instruction, "mode": project.get("mode", "generic")})
+        return {"layout_config": config, "field_candidates": fields}
 
     def prepare_buyer_layout(self, paths: dict[str, Path], country: str, procurement_need: str) -> dict[str, Any]:
         if not paths["template"].is_file():
@@ -667,6 +797,13 @@ class ConsoleState:
             if not isinstance(raw, dict):
                 continue
             item = {key: str(raw.get(key, "") or "").strip() for key in BUYER_FIELDS}
+            source_urls = raw.get("source_urls")
+            item["source_urls"] = [str(url).strip() for url in source_urls if str(url).strip()] if isinstance(source_urls, list) else []
+            for score_key in BUYER_SCORE_FIELDS:
+                try:
+                    item[score_key] = max(0, min(100, int(raw.get(score_key, 0) or 0)))
+                except (TypeError, ValueError):
+                    item[score_key] = 0
             item["country"] = item["country"] or default_country
             if not item["name"]:
                 warnings.append(f"第{index}家买家缺少企业名称。")
@@ -741,6 +878,9 @@ class ConsoleState:
         buyer_count = int(options.get("buyer_count", 10))
         if buyer_count < 1 or buyer_count > 30:
             raise ValueError("买家数量必须在1到30之间。")
+        strategy = dict(options.get("strategy") or {})
+        strategy.setdefault("prefer_import_evidence", True)
+        strategy["candidate_multiplier"] = max(2, min(5, int(strategy.get("candidate_multiplier", 3) or 3)))
         job_id = uuid.uuid4().hex[:12]
         job = {
             "id": job_id,
@@ -754,6 +894,7 @@ class ConsoleState:
             "fetch_assets": bool(options.get("fetch_assets", False)),
             "asset_mode": str(options.get("asset_mode", "light") or "light"),
             "enable_ai_visual_fallback": bool(options.get("enable_ai_visual_fallback", False)) and bool(self.model_settings.get("visual_enabled", False)),
+            "strategy": strategy,
             "stdout": "",
             "stderr": "",
         }
@@ -853,7 +994,13 @@ class ConsoleState:
             "--workspace", str(run_dir / "research"),
             "--buyer-count", str(job["buyer_count"]),
             "--research-mode", clean_research_mode(self.model_settings.get("research_mode")),
+            "--preferred-industries", str((job.get("strategy") or {}).get("preferred_industries", "")),
+            "--excluded-company-types", str((job.get("strategy") or {}).get("excluded_company_types", "")),
+            "--custom-requirements", str((job.get("strategy") or {}).get("custom_requirements", "")),
+            "--candidate-multiplier", str((job.get("strategy") or {}).get("candidate_multiplier", 3)),
         ]
+        if (job.get("strategy") or {}).get("prefer_import_evidence", True):
+            command.append("--prefer-import-evidence")
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         try:
@@ -899,7 +1046,11 @@ class ConsoleState:
                 "layout_ready": saved["layout_ready"],
                 "warnings": saved["warnings"],
                 "assets_requested": bool(job.get("fetch_assets")),
+                "strategy": job.get("strategy") or {},
             }
+            project = read_json(paths["project"])
+            project["research_strategy"] = job.get("strategy") or {}
+            write_json(paths["project"], project)
             self.set_job(
                 job_id,
                 status="completed",
@@ -1092,7 +1243,17 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         try:
             parts = self.parts()
             if parts == ["api", "health"]:
-                self.send_json({"ok": True, "version": 3, "features": ["network-probe", "powershell-fallback"]})
+                self.send_json({
+                    "ok": True,
+                    "version": 4,
+                    "features": [
+                        "network-probe",
+                        "powershell-fallback",
+                        "qualified-buyer-research",
+                        "document-import",
+                        "natural-language-layout",
+                    ],
+                })
             elif parts == ["api", "model-settings"]:
                 self.send_json(self.state.model_settings_payload())
             elif parts == ["api", "projects"]:
@@ -1122,6 +1283,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self.send_json(self.state.diagnose_model_connection(self.read_json_body()))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "template":
                 self.send_json(self.state.save_template(parts[2], self.read_body(MAX_UPLOAD_BYTES)))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "import-records":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) if "=" in item else (item, "") for item in query.split("&") if item)
+                filename = unquote(params.get("filename", "") or self.headers.get("X-Filename", "document.txt"))
+                instruction = unquote(params.get("instruction", "") or self.headers.get("X-Instruction", ""))
+                self.send_json(self.state.import_records_document(parts[2], self.read_body(MAX_UPLOAD_BYTES), filename, instruction))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-from-instruction":
+                self.send_json(self.state.generate_layout_from_instruction(parts[2], self.read_json_body()))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "research-buyers":
                 self.send_json(self.state.create_research_job(parts[2], self.read_json_body()), HTTPStatus.ACCEPTED)
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "run":

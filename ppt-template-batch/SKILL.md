@@ -150,7 +150,29 @@ Buyer-board preset expects:
 - optional `logo_path`
 - optional `site_image_path`
 
-If buyer data is missing and the user gives country plus procurement need, use `scripts/discover_buyer_profiles.py` to generate buyer profiles. Buyer research selection must favor actual procurement accounts: end users, distributors/importers/resellers, EPC/project developers, integrators, maintenance contractors, or manufacturers with a clear internal-use/component/resale purchase scenario. Do not treat every manufacturer as a buyer by default.
+If buyer data is missing and the user gives country plus procurement need, use `scripts/discover_buyer_profiles.py` to generate buyer profiles. Buyer research must build a broader candidate pool before scoring and shortlisting. Favor actual procurement accounts: local end users, distributors/importers/resellers, EPC/project developers, integrators, maintenance contractors, or manufacturers with a clear internal-use/component/resale purchase scenario. For component needs such as motors, require a concrete production, equipment, maintenance, project, or resale demand scenario. Prioritize public import, distribution, agency, cross-border sourcing, or trade evidence when available. Do not treat every manufacturer as a buyer by default, and downgrade direct competing OEMs unless they also show internal-use, import, or distribution demand.
+
+Preserve qualification details in buyer records:
+
+- `buyer_type`
+- `demand_scenarios`
+- `local_presence`
+- `import_signal`
+- `evidence`
+- `source_urls`
+- `fit_score`, `demand_score`, `import_score`, `verification_score`, `total_score`
+- `confidence`
+- `risks`
+
+Use advanced research inputs when the user's target is specialized:
+
+- `preferred_industries`
+- `excluded_company_types`
+- `custom_requirements`
+- `prefer_import_evidence`
+- `candidate_multiplier`
+
+For generic templates, use `scripts/import_content_document.py` or the control console to import TXT, Markdown, CSV, JSON, or DOCX content into `records.json`. Keep the original `source_text` and the user's `source_instruction` in globals. Prefer the natural-language layout field for non-technical users, then verify the generated starter mapping against Template Structure.
 
 Buyer-briefing preset expects pages with:
 
@@ -215,6 +237,8 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
   Use when COM is unavailable and image placement still needs to proceed.
 - `scripts/discover_buyer_profiles.py`
   Use only when a buyer-oriented task requires buyer research from country plus procurement need.
+- `scripts/import_content_document.py`
+  Use when a generic PPT task needs TXT, Markdown, CSV, JSON, or DOCX source material converted into `records.json`.
 - `scripts/doctor.py`
   Use when diagnosing dependency, network, PowerPoint, or environment-variable problems.
 

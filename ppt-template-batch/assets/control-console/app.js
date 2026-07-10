@@ -83,7 +83,10 @@ function chineseCount(value) {
 function blankBuyer(country) {
   return {
     name: "", country: country || "", website: "", products: "", bio: "",
-    logo_path: "", site_image_path: "", research_notes: ""
+    logo_path: "", site_image_path: "", research_notes: "", buyer_type: "",
+    demand_scenarios: "", local_presence: "", import_signal: "", evidence: "",
+    source_urls: [], fit_score: 0, demand_score: 0, import_score: 0,
+    verification_score: 0, total_score: 0, confidence: "", risks: ""
   };
 }
 
@@ -348,6 +351,12 @@ function buyerEntryHtml(buyer, index) {
   const title = buyer.name || ("买家 " + (index + 1));
   const logoState = buyer.logo_path ? '<span class="ready">Logo 已获取</span>' : '<span>Logo 未获取</span>';
   const siteState = buyer.site_image_path ? '<span class="ready">右侧图片已获取</span>' : '<span>右侧图片未获取</span>';
+  const score = Number(buyer.total_score || 0);
+  const sourceCount = Array.isArray(buyer.source_urls) ? buyer.source_urls.length : 0;
+  const qualification = score || buyer.demand_scenarios || buyer.evidence ? '<details class="qualification">' +
+    '<summary><span>匹配评分 <strong>' + score + '</strong></span><span>' + escapeHtml(buyer.buyer_type || "待分类") + ' · ' + sourceCount + ' 条来源</span></summary>' +
+    '<div class="score-grid"><span>业务匹配<strong>' + Number(buyer.fit_score || 0) + '</strong></span><span>必然需求<strong>' + Number(buyer.demand_score || 0) + '</strong></span><span>进口信号<strong>' + Number(buyer.import_score || 0) + '</strong></span><span>证据质量<strong>' + Number(buyer.verification_score || 0) + '</strong></span></div>' +
+    '<dl><dt>需求场景</dt><dd>' + escapeHtml(buyer.demand_scenarios || "未说明") + '</dd><dt>当地业务</dt><dd>' + escapeHtml(buyer.local_presence || "未说明") + '</dd><dt>进口/采购信号</dt><dd>' + escapeHtml(buyer.import_signal || "暂无公开证据") + '</dd><dt>证据与风险</dt><dd>' + escapeHtml((buyer.evidence || "") + (buyer.risks ? "；风险：" + buyer.risks : "")) + '</dd></dl></details>' : '';
   return '<article class="buyer-entry" data-index="' + index + '">' +
     '<div class="buyer-entry-head"><div class="buyer-entry-title"><span class="buyer-index">' + (index + 1) +
     '</span><strong>' + escapeHtml(title) + '</strong></div><button class="remove-buyer" data-remove="' + index +
@@ -363,7 +372,7 @@ function buyerEntryHtml(buyer, index) {
     '<div class="buyer-field bio"><label>企业简介<textarea data-buyer-index="' + index + '" data-field="bio" placeholder="填写约120个中文字符的企业介绍">' +
     escapeHtml(buyer.bio) + '</textarea></label><div class="field-meta ' + (count >= 120 ? "good" : "") +
     '" data-bio-count="' + index + '">' + count + ' / 120 个中文字符</div></div>' +
-    '<div class="asset-state">' + logoState + siteState + '</div></div></article>';
+    '<div class="asset-state">' + logoState + siteState + '</div>' + qualification + '</div></article>';
 }
 
 function renderBuyerForm() {
@@ -373,6 +382,12 @@ function renderBuyerForm() {
   $("#research-country").value = globals.country || research.country || "";
   $("#research-need").value = globals.procurement_need || research.procurement_need || "";
   $("#research-count").value = research.buyer_count || Math.max(data.records.length, 10);
+  const strategy = state.current.project.research_strategy || {};
+  $("#preferred-industries").value = strategy.preferred_industries || "";
+  $("#excluded-company-types").value = strategy.excluded_company_types || "";
+  $("#custom-requirements").value = strategy.custom_requirements || "";
+  $("#prefer-import-evidence").checked = strategy.prefer_import_evidence !== false;
+  $("#candidate-multiplier").value = strategy.candidate_multiplier || 3;
   $("#records-summary").textContent = data.records.length + " 家买家";
   const list = $("#buyer-list");
   if (!data.records.length) {
@@ -474,12 +489,21 @@ function renderProject() {
   data.records = data.project.mode === "buyer_briefing" ? normalizeBriefing(data.records) : normalizeRecords(data.records);
   $("#records-editor").value = pretty(data.records);
   $("#layout-editor").value = pretty(data.layout_config);
+  $("#layout-instruction").value = data.project.layout_instruction || "";
   $("#layout-summary").textContent = mappingCount(data.layout_config) ?
     (data.layout_config.cover ? "买家看板映射已就绪" : mappingCount(data.layout_config) + " 组页面映射") : "尚未配置映射";
   $("#output-filename").value = data.project.export && data.project.export.filename || "finished.pptx";
   $("#strict-mode").checked = Boolean(data.project.export && data.project.export.strict);
   if (data.project.mode === "buyer_briefing") renderBriefingForm();
   else renderBuyerForm();
+  $("#import-band").classList.toggle("hidden", data.project.mode !== "generic");
+  $$("[data-data-view]").forEach(function (button) {
+    const view = button.dataset.dataView;
+    const visible = view === "json" ||
+      (view === "buyer" && data.project.mode === "buyer_board") ||
+      (view === "briefing" && data.project.mode === "buyer_briefing");
+    button.classList.toggle("hidden", !visible);
+  });
   setDataView(data.project.mode === "buyer_board" ? "buyer" : (data.project.mode === "buyer_briefing" ? "briefing" : "json"), false);
   renderStructure(data.template);
   renderOutputs(data.outputs);
@@ -582,6 +606,62 @@ async function uploadTemplate(file) {
   }
 }
 
+async function importRecordsFile(file) {
+  if (!state.current || !file) return;
+  const suffix = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
+  if (![".txt", ".md", ".csv", ".json", ".docx"].includes(suffix)) {
+    showToast("资料导入支持 TXT、Markdown、CSV、JSON、DOCX", true);
+    return;
+  }
+  try {
+    $("#import-status").textContent = "正在识别 " + file.name;
+    const query = "?filename=" + encodeURIComponent(file.name) + "&instruction=" + encodeURIComponent($("#import-instruction").value.trim());
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/import-records" + query, {
+      method: "POST",
+      headers: {"Content-Type": "application/octet-stream"},
+      body: await file.arrayBuffer()
+    });
+    state.current.records = normalizeRecords(result.records);
+    $("#records-editor").value = pretty(state.current.records);
+    $("#import-status").textContent = "已导入 " + result.source + "，生成 " + result.record_count + " 条记录";
+    setDataView("json", false);
+    updateSteps();
+    showToast("资料已识别并写入 records.json");
+  } catch (error) {
+    $("#import-status").textContent = "导入失败";
+    showToast(error.message, true);
+  } finally {
+    $("#records-file").value = "";
+  }
+}
+
+async function generateLayoutFromInstruction() {
+  if (!state.current) return;
+  const instruction = $("#layout-instruction").value.trim();
+  if (!instruction) {
+    showToast("请先描述资料怎样进入模板", true);
+    return;
+  }
+  try {
+    $("#generate-layout").disabled = true;
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-from-instruction", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({instruction: instruction})
+    });
+    state.current.layout_config = result.layout_config;
+    state.current.project.layout_instruction = instruction;
+    $("#layout-editor").value = pretty(result.layout_config);
+    $("#layout-summary").textContent = mappingCount(result.layout_config) + " 组页面映射";
+    updateSteps();
+    showToast("已生成起步映射，请结合模板结构检查元素编号");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    $("#generate-layout").disabled = false;
+  }
+}
+
 function setTab(name) {
   state.activeTab = name;
   $$(".tab").forEach(function (tab) { tab.classList.toggle("active", tab.dataset.tab === name); });
@@ -673,6 +753,13 @@ async function runResearch() {
         country: country,
         procurement_need: need,
         buyer_count: count,
+        strategy: {
+          preferred_industries: $("#preferred-industries").value.trim(),
+          excluded_company_types: $("#excluded-company-types").value.trim(),
+          custom_requirements: $("#custom-requirements").value.trim(),
+          prefer_import_evidence: $("#prefer-import-evidence").checked,
+          candidate_multiplier: Number($("#candidate-multiplier").value || 3)
+        },
         fetch_assets: $("#fetch-assets").checked,
         enable_ai_visual_fallback: $("#fetch-assets").checked && $("#ai-visual-fallback").checked,
         asset_mode: "light"
@@ -873,6 +960,8 @@ async function runExport() {
   try {
     if (state.dataView === "buyer") {
       await persistBuyerData(false);
+    } else if (state.dataView === "briefing") {
+      await persistBriefingData(false);
     } else {
       state.current.records = normalizeRecords(parseEditor("#records-editor", "数据"));
       await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/document/records", {
@@ -921,8 +1010,10 @@ $("#refresh-projects").addEventListener("click", function () {
   refreshProjects().catch(function (error) { showToast(error.message, true); });
 });
 $("#template-file").addEventListener("change", function (event) { uploadTemplate(event.target.files[0]); });
+$("#records-file").addEventListener("change", function (event) { importRecordsFile(event.target.files[0]); });
 $("#save-records").addEventListener("click", function () { saveDocument("records"); });
 $("#save-layout").addEventListener("click", function () { saveDocument("layout"); });
+$("#generate-layout").addEventListener("click", generateLayoutFromInstruction);
 $("#save-buyers").addEventListener("click", function () {
   persistBuyerData(true).catch(function (error) { showToast(error.message, true); });
 });

@@ -59,6 +59,19 @@
             <span id="records-summary">0 家买家</span>
           </div>
 
+          <div id="import-band" class="import-band hidden">
+            <div class="import-copy">
+              <span class="eyebrow">资料导入</span>
+              <strong>从文本或 Word 整理演示内容</strong>
+              <p>支持 TXT、Markdown、CSV、JSON、DOCX。系统会保留原文，并按段落或表格生成可映射的 records 数据。</p>
+            </div>
+            <label>整理要求<textarea id="import-instruction" placeholder="例如：每个产品一页，提取产品名、卖点、参数、应用场景；不要改写数字和专有名词。"></textarea></label>
+            <div class="import-actions">
+              <label class="upload-button"><input id="records-file" type="file" accept=".txt,.md,.csv,.json,.docx,text/plain,text/markdown,text/csv,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document">选择资料文件</label>
+              <span id="import-status">尚未导入</span>
+            </div>
+          </div>
+
           <div id="buyer-data-view">
             <div class="research-band">
               <div class="research-heading">
@@ -75,6 +88,16 @@
                 <label class="check-row"><input id="fetch-assets" type="checkbox"><span>同步抓取企业 Logo 和官网产品图</span></label>
                 <label class="check-row"><input id="ai-visual-fallback" type="checkbox"><span>缺图时允许 AI 生成右侧配图</span></label>
               </div>
+              <details class="research-advanced">
+                <summary>提高搜索准确度</summary>
+                <div class="research-advanced-grid">
+                  <label>优先行业或应用场景<textarea id="preferred-industries" placeholder="例如：食品机械、矿山、泵阀、输送设备、暖通设备制造商"></textarea></label>
+                  <label>排除企业类型<textarea id="excluded-company-types" placeholder="例如：纯电机制造商、无当地业务的海外公司、无官网企业"></textarea></label>
+                  <label class="wide">自定义筛选要求<textarea id="custom-requirements" placeholder="例如：企业必须在当地设有工厂或项目；优先有进口记录、外国品牌代理或持续设备维护需求的企业。"></textarea></label>
+                  <label class="check-row"><input id="prefer-import-evidence" type="checkbox" checked><span>优先进口、代理、跨境采购等公开证据</span></label>
+                  <label>候选池倍数<input id="candidate-multiplier" type="number" min="2" max="5" value="3"></label>
+                </div>
+              </details>
               <div id="research-progress" class="research-progress hidden">
                 <div><span id="research-status-dot" class="progress-dot"></span><strong id="research-status">准备搜索</strong></div>
                 <pre id="research-log"></pre>
@@ -102,6 +125,15 @@
 
         <section id="panel-layout" class="panel">
           <div class="panel-toolbar"><div><strong>layout-config.json</strong><span id="layout-summary">尚未配置映射</span></div><button id="save-layout" type="button">保存映射</button></div>
+          <div class="natural-layout">
+            <div>
+              <span class="eyebrow">自然语言映射</span>
+              <strong>描述你希望资料怎样进入模板</strong>
+              <p>系统会结合已导入字段和模板结构生成起步映射。首次使用新模板仍需检查元素编号。</p>
+            </div>
+            <textarea id="layout-instruction" placeholder="例如：第1页放项目标题；第2页作为重复页，每条记录一页，顶部放产品名，中部放卖点和参数，右侧图片框放 image_path。"></textarea>
+            <button id="generate-layout" type="button">生成起步映射</button>
+          </div>
           <textarea id="layout-editor" class="json-editor" spellcheck="false" aria-label="layout-config.json 编辑器"></textarea>
         </section>
         <section id="panel-structure" class="panel">

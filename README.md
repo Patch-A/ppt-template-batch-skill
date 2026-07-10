@@ -43,6 +43,13 @@ When creating a project, choose one of the built-in presets:
 - Buyer Board Preset: country plus procurement need, buyer profiles, logos, website/product visuals, and one-buyer-per-page layouts.
 - Buyer Briefing Preset: compact category pages with a dedicated form: one category per slide and 6 buyers per slide.
 
+Recent usability upgrades:
+
+- Buyer research now builds a candidate pool and qualifies it by local presence, concrete demand scenarios, import or trade signals, public evidence, scores, confidence, and risks.
+- Buyer-board projects include advanced controls for preferred industries, excluded company types, import-evidence priority, candidate-pool size, and free-form custom requirements.
+- Generic PPT projects can import TXT, Markdown, CSV, JSON, or DOCX material and convert it into `records.json`.
+- Layout mapping can start from a natural-language instruction in the console and then be checked against Template Structure element indexes.
+
 
 ### Capability-based model settings
 
@@ -116,6 +123,27 @@ This preset supports:
 - per-run asset report through `asset_fetch_report.json`
 - PowerPoint COM image placement with Python fallback
 - WorkBuddy/Windows diagnostics through `doctor.py`
+
+Buyer research stores qualification details alongside each buyer:
+
+- `buyer_type`
+- `demand_scenarios`
+- `local_presence`
+- `import_signal`
+- `evidence`
+- `source_urls`
+- `fit_score`, `demand_score`, `import_score`, `verification_score`, `total_score`
+- `confidence`
+- `risks`
+
+CLI research can also accept:
+
+```bash
+--preferred-industries "食品机械、矿山、泵阀、输送设备制造商"
+--excluded-company-types "纯电机制造商、无当地业务的海外公司"
+--custom-requirements "优先当地企业，业务中对电机有必然需求，并优先有进口或代理证据"
+--candidate-multiplier 3
+```
 
 One-click existing buyer preset data:
 

@@ -123,6 +123,16 @@ def generate_buyers_from_research(args: argparse.Namespace, skill_root: Path, wo
         cmd.extend(["--buyer-count", str(args.buyer_count)])
     if args.openai_model:
         cmd.extend(["--model", args.openai_model])
+    if args.preferred_industries:
+        cmd.extend(["--preferred-industries", args.preferred_industries])
+    if args.excluded_company_types:
+        cmd.extend(["--excluded-company-types", args.excluded_company_types])
+    if args.custom_requirements:
+        cmd.extend(["--custom-requirements", args.custom_requirements])
+    if args.prefer_import_evidence:
+        cmd.append("--prefer-import-evidence")
+    if args.candidate_multiplier:
+        cmd.extend(["--candidate-multiplier", str(args.candidate_multiplier)])
     run(cmd)
     return output_json
 
@@ -203,6 +213,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cover-country", help="Optional cover country override")
     parser.add_argument("--content-title", help="Optional content title override")
     parser.add_argument("--openai-model", help="Optional OpenAI model override for research mode")
+    parser.add_argument("--preferred-industries", default="", help="Preferred buyer industries or application scenarios")
+    parser.add_argument("--excluded-company-types", default="", help="Company types to exclude or downgrade")
+    parser.add_argument("--custom-requirements", default="", help="Additional natural-language research requirements")
+    import_group = parser.add_mutually_exclusive_group()
+    import_group.add_argument("--prefer-import-evidence", dest="prefer_import_evidence", action="store_true", help="Prioritize companies with import or trade evidence")
+    import_group.add_argument("--no-prefer-import-evidence", dest="prefer_import_evidence", action="store_false", help="Do not prioritize import or trade evidence")
+    parser.set_defaults(prefer_import_evidence=True)
+    parser.add_argument("--candidate-multiplier", type=int, default=3, help="How many candidates to generate before final qualification")
     parser.add_argument(
         "--asset-mode",
         choices=("light", "auto", "browser"),

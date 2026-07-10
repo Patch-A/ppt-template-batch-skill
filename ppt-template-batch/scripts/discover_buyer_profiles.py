@@ -29,12 +29,13 @@ PROVIDER_DEFAULTS = {
     "compatible": {"base_url": "", "model": ""},
 }
 
-SYSTEM_PROMPT = """You are a B2B buyer research assistant.
-Your task is to find relevant potential buyers or procurement companies for a target country and procurement need.
+SYSTEM_PROMPT = """You are a rigorous B2B buyer research and qualification analyst.
+Your task is to build a broad candidate pool, then qualify companies against the user's actual procurement scenario.
 Return only valid JSON. Do not include markdown or commentary.
-Each buyer must include: company name, country, official website domain, specific procurement products, a Simplified Chinese company bio, empty logo_path, empty site_image_path, and one research note.
-The bio field must contain exactly 120 Chinese ideographs. Use Simplified Chinese. Products should be concrete and separated with Chinese commas or enumeration punctuation.
-Prefer real companies with clear official websites and a strong business fit. Avoid vague or unverifiable entities.
+Never treat an industry match as sufficient evidence. A company is relevant only when its manufacturing process, operations, projects, distribution business, installed equipment, maintenance needs, or import activity creates a plausible need for the requested product.
+Prefer companies headquartered in or operating materially inside the selected country. Prefer official websites and verifiable business evidence. Import or trade evidence is valuable, but must not be invented.
+Distinguish direct end users, manufacturers consuming the product as a component or production input, distributors/importers, EPC/integrators, maintenance contractors, project owners, and competing OEMs.
+Downgrade or exclude companies whose only connection is that they manufacture or sell the same product without a credible purchasing scenario.
 """
 
 
@@ -179,20 +180,72 @@ def pad_or_trim_bio(text: str) -> str:
     return pad_or_trim_bio(result)
 
 
-def build_user_prompt(country: str, procurement_need: str, buyer_count: int, allow_no_live_search: bool = False) -> str:
+def build_strategy_text(strategy: dict[str, Any] | None) -> str:
+    strategy = strategy or {}
+    preferred_industries = str(strategy.get("preferred_industries", "") or "").strip()
+    excluded_company_types = str(strategy.get("excluded_company_types", "") or "").strip()
+    custom_requirements = str(strategy.get("custom_requirements", "") or "").strip()
+    prefer_import_evidence = bool(strategy.get("prefer_import_evidence", True))
+    return f"""Research strategy:
+- Preferred industries or application scenarios: {preferred_industries or "Infer from the procurement need"}
+- Excluded company types: {excluded_company_types or "Direct competitors without a credible buying scenario"}
+- Prioritize import/trade evidence: {"yes" if prefer_import_evidence else "no"}
+- Additional user requirements: {custom_requirements or "None"}
+"""
+
+
+def build_user_prompt(
+    country: str,
+    procurement_need: str,
+    buyer_count: int,
+    allow_no_live_search: bool = False,
+    strategy: dict[str, Any] | None = None,
+    stage: str = "candidate_pool",
+    candidates: list[dict[str, Any]] | None = None,
+) -> str:
     no_search_note = "If the current model cannot browse the web, use known public information and mark research_notes as requiring manual website verification." if allow_no_live_search else ""
+    strategy_text = build_strategy_text(strategy)
+    if stage == "shortlist":
+        return f"""Target country or region: {country}
+Procurement need: {procurement_need}
+Required final buyer count: {buyer_count}
+{strategy_text}
+
+Evaluate the candidate pool below. Remove weak, duplicate, unverifiable, non-local, and competitor-only candidates. Rank the remaining companies by total_score and return only the strongest {buyer_count}.
+
+Scoring dimensions, each from 0 to 100:
+- fit_score: how directly the company's business creates a need for the requested product
+- demand_score: how necessary or recurring the product is in manufacturing, operations, maintenance, projects, or resale
+- import_score: strength of public import, distribution, foreign sourcing, or cross-border procurement signals
+- verification_score: quality of official-site and public-source evidence
+- total_score: weighted overall score, emphasizing fit and demand
+
+For motors, for example, prioritize local manufacturers whose products or production lines require motors, factories with motor-driven machinery, utilities, mines, logistics facilities, EPC/integrators, industrial maintenance companies, and verified importers/distributors. Do not select a company merely because it operates in a broad industrial category.
+
+Candidate pool:
+{json.dumps(candidates or [], ensure_ascii=False)}
+
+Return the required JSON structure. Each shortlisted buyer must include concrete demand_scenarios, evidence, source_urls, score fields, confidence, and risks. Never invent import evidence; use an empty import_signal and a low import_score when it is unavailable.
+"""
     return f"""Target country or region: {country}
 Procurement need: {procurement_need}
-Buyer count: {buyer_count}
+Candidate pool size: {buyer_count}
 {no_search_note}
+{strategy_text}
 
 Selection rules:
 - Choose real companies with clear official website domains and strong business fit.
+- Build a diverse candidate pool before ranking. Include multiple buyer types when appropriate.
+- Confirm the company is local to, headquartered in, or materially operating in the target country.
 - The target is actual buyers/procurement accounts: end users that consume the product in operations, distributors/importers/resellers that buy for resale, EPC/project developers/integrators/maintenance contractors that buy for projects, or large groups with centralized procurement.
 - Do not list a manufacturer only because it is in the same industry. A manufacturer is valid only when it likely purchases the requested product as production equipment, process equipment, components, consumables, spare parts, or resale inventory.
 - Exclude or downgrade direct competing OEMs whose main business is making and selling the same requested product, unless public business fit suggests importing/distribution or internal use.
 - The products field must describe what the company would buy, not what it sells.
-- research_notes must briefly state buyer_type and procurement_rationale, for example: end_user_factory; uses laser marking for traceability on automotive components.
+- demand_scenarios must explain exactly where and why the requested product is needed.
+- import_signal must summarize public import/distribution/foreign-sourcing evidence, or be empty when no evidence is available.
+- evidence must summarize the strongest qualification evidence.
+- source_urls must contain public pages that support the qualification when live search is available.
+- research_notes must state buyer type, procurement rationale, and verification caveats.
 - Avoid entities with vague websites, weak procurement relevance, or unclear purchase scenario.
 
 Return JSON in this exact structure:
@@ -206,7 +259,13 @@ Return JSON in this exact structure:
       "bio": "Exactly 120 Chinese ideographs in Simplified Chinese",
       "logo_path": "",
       "site_image_path": "",
-      "research_notes": "Short reason for fit"
+      "research_notes": "Buyer type, procurement rationale, and caveats",
+      "buyer_type": "end_user_factory|component_user_manufacturer|importer_distributor|epc_integrator|maintenance_contractor|project_owner|other",
+      "demand_scenarios": "Concrete operational or manufacturing use cases",
+      "local_presence": "Evidence of headquarters, facilities, projects, branches, or operations in the target country",
+      "import_signal": "Verified import, distribution, foreign sourcing, or trade signal; empty if unavailable",
+      "evidence": "Concise evidence summary",
+      "source_urls": ["https://official-or-public-source.example/page"]
     }}
   ]
 }}
@@ -227,6 +286,29 @@ def parse_json_payload(text: str) -> dict[str, Any]:
 
 
 def buyer_result_schema() -> dict[str, Any]:
+    buyer_properties = {
+        "name": {"type": "string"},
+        "country": {"type": "string"},
+        "website": {"type": "string"},
+        "products": {"type": "string"},
+        "bio": {"type": "string"},
+        "logo_path": {"type": "string"},
+        "site_image_path": {"type": "string"},
+        "research_notes": {"type": "string"},
+        "buyer_type": {"type": "string"},
+        "demand_scenarios": {"type": "string"},
+        "local_presence": {"type": "string"},
+        "import_signal": {"type": "string"},
+        "evidence": {"type": "string"},
+        "source_urls": {"type": "array", "items": {"type": "string"}},
+        "fit_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "demand_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "import_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "verification_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "total_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "confidence": {"type": "string"},
+        "risks": {"type": "string"},
+    }
     return {
         "type": "object",
         "properties": {
@@ -234,17 +316,8 @@ def buyer_result_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "country": {"type": "string"},
-                        "website": {"type": "string"},
-                        "products": {"type": "string"},
-                        "bio": {"type": "string"},
-                        "logo_path": {"type": "string"},
-                        "site_image_path": {"type": "string"},
-                        "research_notes": {"type": "string"},
-                    },
-                    "required": ["name", "country", "website", "products", "bio", "logo_path", "site_image_path", "research_notes"],
+                    "properties": buyer_properties,
+                    "required": list(buyer_properties),
                     "additionalProperties": False,
                 },
             }
@@ -254,19 +327,61 @@ def buyer_result_schema() -> dict[str, Any]:
     }
 
 
-def fetch_buyers_with_openai_responses(api_key: str, base_url: str, country: str, procurement_need: str, buyer_count: int, model_name: str) -> list[dict[str, Any]]:
+def candidate_result_schema() -> dict[str, Any]:
+    properties = {
+        "name": {"type": "string"},
+        "country": {"type": "string"},
+        "website": {"type": "string"},
+        "products": {"type": "string"},
+        "bio": {"type": "string"},
+        "logo_path": {"type": "string"},
+        "site_image_path": {"type": "string"},
+        "research_notes": {"type": "string"},
+        "buyer_type": {"type": "string"},
+        "demand_scenarios": {"type": "string"},
+        "local_presence": {"type": "string"},
+        "import_signal": {"type": "string"},
+        "evidence": {"type": "string"},
+        "source_urls": {"type": "array", "items": {"type": "string"}},
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "buyers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(properties),
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["buyers"],
+        "additionalProperties": False,
+    }
+
+
+def fetch_json_with_openai_responses(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    user_prompt: str,
+    schema_name: str,
+    strict_shortlist: bool = True,
+) -> list[dict[str, Any]]:
     request_payload = {
         "model": model_name,
         "input": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(country, procurement_need, buyer_count)},
+            {"role": "user", "content": user_prompt},
         ],
         "tools": [{"type": "web_search"}],
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "buyer_research_result",
-                "schema": buyer_result_schema(),
+                "name": schema_name,
+                "schema": buyer_result_schema() if strict_shortlist else candidate_result_schema(),
                 "strict": True,
             }
         },
@@ -288,12 +403,17 @@ def fetch_buyers_with_openai_responses(api_key: str, base_url: str, country: str
     return payload.get("buyers", [])
 
 
-def fetch_buyers_with_chat(api_key: str, base_url: str, country: str, procurement_need: str, buyer_count: int, model_name: str) -> list[dict[str, Any]]:
+def fetch_json_with_chat(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    user_prompt: str,
+) -> list[dict[str, Any]]:
     payload = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(country, procurement_need, buyer_count, allow_no_live_search=True)},
+            {"role": "user", "content": user_prompt},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
@@ -313,7 +433,16 @@ def fetch_buyers_with_chat(api_key: str, base_url: str, country: str, procuremen
     return payload.get("buyers", [])
 
 
-def fetch_buyers(country: str, procurement_need: str, buyer_count: int, model: str | None, provider: str | None, base_url: str | None, research_mode: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def fetch_buyers(
+    country: str,
+    procurement_need: str,
+    buyer_count: int,
+    model: str | None,
+    provider: str | None,
+    base_url: str | None,
+    research_mode: str | None = None,
+    strategy: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     provider_name = clean_provider(provider)
     resolved_base_url = clean_base_url(provider_name, base_url)
     model_name = model or get_env_var("BUYER_RESEARCH_MODEL") or PROVIDER_DEFAULTS[provider_name]["model"]
@@ -321,13 +450,58 @@ def fetch_buyers(country: str, procurement_need: str, buyer_count: int, model: s
         raise RuntimeError("Research model is not configured.")
     api_key = require_api_key()
     resolved_mode = clean_research_mode(research_mode)
+    candidate_multiplier = max(2, min(5, int((strategy or {}).get("candidate_multiplier", 3) or 3)))
+    candidate_count = min(60, max(buyer_count, buyer_count * candidate_multiplier))
+    candidate_prompt = build_user_prompt(
+        country,
+        procurement_need,
+        candidate_count,
+        allow_no_live_search=not (provider_name == "openai" and resolved_mode == "openai_web_search"),
+        strategy=strategy,
+        stage="candidate_pool",
+    )
     if provider_name == "openai" and resolved_mode == "openai_web_search":
-        buyers = fetch_buyers_with_openai_responses(api_key, resolved_base_url, country, procurement_need, buyer_count, model_name)
+        candidates = fetch_json_with_openai_responses(
+            api_key,
+            resolved_base_url,
+            model_name,
+            candidate_prompt,
+            "buyer_candidate_pool",
+            False,
+        )
         mode = "openai_web_search"
     else:
-        buyers = fetch_buyers_with_chat(api_key, resolved_base_url, country, procurement_need, buyer_count, model_name)
+        candidates = fetch_json_with_chat(api_key, resolved_base_url, model_name, candidate_prompt)
         mode = "compatible_chat_no_builtin_search" if provider_name != "openai" else "openai_chat_no_builtin_search"
-    return buyers, {"provider": provider_name, "base_url": resolved_base_url, "model": model_name, "mode": mode, "research_mode": resolved_mode}
+    shortlist_prompt = build_user_prompt(
+        country,
+        procurement_need,
+        buyer_count,
+        allow_no_live_search=mode != "openai_web_search",
+        strategy=strategy,
+        stage="shortlist",
+        candidates=candidates,
+    )
+    if mode == "openai_web_search":
+        buyers = fetch_json_with_openai_responses(
+            api_key,
+            resolved_base_url,
+            model_name,
+            shortlist_prompt,
+            "qualified_buyer_shortlist",
+        )
+    else:
+        buyers = fetch_json_with_chat(api_key, resolved_base_url, model_name, shortlist_prompt)
+    return buyers, {
+        "provider": provider_name,
+        "base_url": resolved_base_url,
+        "model": model_name,
+        "mode": mode,
+        "research_mode": resolved_mode,
+        "candidate_count": len(candidates),
+        "shortlist_count": len(buyers),
+        "strategy": strategy or {},
+    }
 
 
 def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -337,6 +511,15 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
         notes = (item.get("research_notes") or "").strip()
         if no_builtin_search:
             notes = (notes + "\uff1b\u517c\u5bb9\u6a21\u578b\u672a\u4f7f\u7528\u5185\u7f6e\u8054\u7f51\u641c\u7d22\uff0c\u5efa\u8bae\u4eba\u5de5\u590d\u6838\u5b98\u7f51\u3002").strip("\uff1b")
+        scores = {}
+        for key in ("fit_score", "demand_score", "import_score", "verification_score", "total_score"):
+            try:
+                scores[key] = max(0, min(100, int(item.get(key, 0) or 0)))
+            except (TypeError, ValueError):
+                scores[key] = 0
+        source_urls = item.get("source_urls")
+        if not isinstance(source_urls, list):
+            source_urls = []
         normalized.append(
             {
                 "name": (item.get("name") or "").strip(),
@@ -347,8 +530,18 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
                 "logo_path": "",
                 "site_image_path": "",
                 "research_notes": notes,
+                "buyer_type": str(item.get("buyer_type", "") or "").strip(),
+                "demand_scenarios": str(item.get("demand_scenarios", "") or "").strip(),
+                "local_presence": str(item.get("local_presence", "") or "").strip(),
+                "import_signal": str(item.get("import_signal", "") or "").strip(),
+                "evidence": str(item.get("evidence", "") or "").strip(),
+                "source_urls": [str(url).strip() for url in source_urls if str(url).strip()],
+                **scores,
+                "confidence": str(item.get("confidence", "") or "").strip().lower(),
+                "risks": str(item.get("risks", "") or "").strip(),
             }
         )
+    normalized.sort(key=lambda item: (item["total_score"], item["verification_score"], item["demand_score"]), reverse=True)
     return normalized
 
 
@@ -363,13 +556,34 @@ def main() -> int:
     parser.add_argument("--provider", help="Model provider: openai, deepseek, qwen, zhipu, kimi, siliconflow, openrouter, ollama, lmstudio, or compatible")
     parser.add_argument("--base-url", help="Optional OpenAI-compatible base URL")
     parser.add_argument("--research-mode", help="model_only or openai_web_search")
+    parser.add_argument("--preferred-industries", default="", help="Preferred industries or application scenarios")
+    parser.add_argument("--excluded-company-types", default="", help="Company types or profiles to exclude")
+    parser.add_argument("--custom-requirements", default="", help="Additional natural-language qualification requirements")
+    parser.add_argument("--prefer-import-evidence", action="store_true", help="Prioritize companies with public import or trade evidence")
+    parser.add_argument("--candidate-multiplier", type=int, default=3, help="Candidate pool multiplier before qualification")
     args = parser.parse_args()
 
     workspace = Path(args.workspace)
     workspace.mkdir(parents=True, exist_ok=True)
 
     try:
-        buyers, research_meta = fetch_buyers(args.country, args.procurement_need, args.buyer_count, args.model, args.provider, args.base_url, args.research_mode)
+        strategy = {
+            "preferred_industries": args.preferred_industries,
+            "excluded_company_types": args.excluded_company_types,
+            "custom_requirements": args.custom_requirements,
+            "prefer_import_evidence": args.prefer_import_evidence,
+            "candidate_multiplier": args.candidate_multiplier,
+        }
+        buyers, research_meta = fetch_buyers(
+            args.country,
+            args.procurement_need,
+            args.buyer_count,
+            args.model,
+            args.provider,
+            args.base_url,
+            args.research_mode,
+            strategy,
+        )
     except Exception as exc:
         raise SystemExit(str(exc)) from None
     normalized = normalize_buyers(buyers, args.country, research_meta)
