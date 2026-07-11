@@ -289,7 +289,7 @@ button:disabled { cursor: wait; opacity: .48; }
   font-size: 9px;
   font-weight: 600;
 }
-.research-fields input, .buyer-field input, .buyer-field textarea, .model-section input, .model-section select,
+.research-fields input, .buyer-field input, .buyer-field textarea, .model-section input, .model-section select, .export-form select,
 .research-advanced-grid textarea, .research-advanced-grid input[type="number"], .briefing-page-head input,
 .briefing-buyer input, .briefing-buyer textarea, .layout-source input, .export-form input[type="text"], .import-band textarea {
   width: 100%;
@@ -300,11 +300,11 @@ button:disabled { cursor: wait; opacity: .48; }
   color: var(--text);
   outline: none;
 }
-.research-fields input, .buyer-field input, .model-section input, .model-section select,
+.research-fields input, .buyer-field input, .model-section input, .model-section select, .export-form select,
 .research-advanced-grid input[type="number"], .briefing-page-head input, .briefing-buyer input,
 .layout-source input, .export-form input[type="text"] { height: 36px; padding: 0 10px; }
 .research-fields input:focus, .buyer-field input:focus, .buyer-field textarea:focus, .model-section input:focus,
-.model-section select:focus, .research-advanced-grid textarea:focus, .briefing-buyer textarea:focus,
+.model-section select:focus, .export-form select:focus, .research-advanced-grid textarea:focus, .briefing-buyer textarea:focus,
 .layout-source input:focus, .export-form input[type="text"]:focus, .import-band textarea:focus { border-color: var(--accent); }
 .research-action, .primary-action {
   border: 0;
@@ -384,6 +384,9 @@ input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent);
 .import-copy p { margin: 5px 0 0; color: var(--secondary); font-size: 9px; line-height: 1.55; }
 .import-band textarea { min-height: 74px; padding: 9px 10px; resize: vertical; line-height: 1.5; }
 .import-actions { display: grid; gap: 7px; }
+.import-actions #import-text { width: min(100%, 310px); min-height: 82px; border: 1px solid var(--separator-strong); border-radius: 6px; background: #fff; color: var(--text); outline: none; }
+.import-actions #import-text:focus { border-color: var(--accent); }
+.import-actions button { height: 32px; border: 1px solid var(--separator-strong); border-radius: 7px; background: #fff; color: var(--text); font-size: 10px; font-weight: 600; }
 .import-actions > span { max-width: 180px; color: var(--secondary); font-size: 9px; line-height: 1.4; }
 
 .natural-layout { padding: 14px; display: grid; grid-template-columns: minmax(175px, .7fr) minmax(260px, 1.3fr) auto; gap: 12px; align-items: end; border-bottom: 1px solid var(--separator); background: #f7f9fb; }

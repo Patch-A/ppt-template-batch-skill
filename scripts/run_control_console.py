@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runpy
+import sys
 from pathlib import Path
 
 
@@ -8,4 +9,5 @@ TARGET = Path(__file__).resolve().parents[1] / "ppt-template-batch" / "scripts" 
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(TARGET.parent))
     runpy.run_path(str(TARGET), run_name="__main__")

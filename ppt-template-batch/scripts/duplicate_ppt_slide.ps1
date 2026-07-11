@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$InputPpt,
     [Parameter(Mandatory = $true)][string]$OutputPpt,
     [Parameter(Mandatory = $true)][int]$SourceSlideIndex,
-    [Parameter(Mandatory = $true)][int]$CopyCount
+    [Parameter(Mandatory = $true)][int]$CopyCount,
+    [ValidateSet("auto", "office", "wps")][string]$Engine = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,8 +21,9 @@ $stagedOutput = Join-Path $stagingRoot "output.pptx"
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPpt) | Out-Null
 Copy-Item -LiteralPath $InputPpt -Destination $stagedInput -Force
-$powerPoint = New-Object -ComObject PowerPoint.Application
-$powerPoint.Visible = -1
+. (Join-Path $PSScriptRoot "presentation_automation.ps1")
+$session = Start-PresentationAutomation -Engine $Engine
+$powerPoint = $session.Application
 
 try {
     $presentation = $powerPoint.Presentations.Open($stagedInput, $false, $false, $false)
@@ -37,7 +39,7 @@ try {
     Copy-Item -LiteralPath $stagedOutput -Destination $OutputPpt -Force
 }
 finally {
-    $powerPoint.Quit()
+    Stop-PresentationAutomation -Session $session
     Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 

@@ -653,9 +653,11 @@ function renderProject() {
     (data.layout_config.cover ? "买家看板映射已就绪" : mappingCount(data.layout_config) + " 组页面映射") : "尚未配置映射";
   $("#output-filename").value = data.project.export && data.project.export.filename || "finished.pptx";
   $("#strict-mode").checked = Boolean(data.project.export && data.project.export.strict);
+  $("#presentation-engine").value = data.project.export && data.project.export.presentation_engine || "auto";
   if (data.project.mode === "buyer_briefing") renderBriefingForm();
   else renderBuyerForm();
-  $("#import-band").classList.toggle("hidden", data.project.mode !== "generic");
+  $("#import-band").classList.remove("hidden");
+  $("#presentation-engine-row").classList.toggle("hidden", data.project.mode !== "generic");
   $$("[data-data-view]").forEach(function (button) {
     const view = button.dataset.dataView;
     const visible = view === "json" ||
@@ -786,10 +788,11 @@ async function importRecordsFile(file) {
       headers: {"Content-Type": "application/octet-stream"},
       body: await file.arrayBuffer()
     });
-    state.current.records = normalizeRecords(result.records);
+    state.current.records = state.current.project.mode === "buyer_briefing" ? normalizeBriefing(result.records) : normalizeRecords(result.records);
+    if (result.layout_config) state.current.layout_config = result.layout_config;
     $("#records-editor").value = pretty(state.current.records);
     $("#import-status").textContent = "已导入 " + result.source + "，生成 " + result.record_count + " 条记录";
-    setDataView("json", false);
+    setDataView(state.current.project.mode === "buyer_board" ? "buyer" : (state.current.project.mode === "buyer_briefing" ? "briefing" : "json"), false);
     updateSteps();
     showToast("资料已识别并写入 records.json");
   } catch (error) {
@@ -798,6 +801,18 @@ async function importRecordsFile(file) {
   } finally {
     $("#records-file").value = "";
   }
+}
+
+async function importPastedText() {
+  const input = $("#import-text");
+  const text = input.value.trim();
+  if (!text) {
+    showToast("\u8bf7\u5148\u7c98\u8d34\u8981\u8bc6\u522b\u7684\u8d44\u6599", true);
+    return;
+  }
+  const file = new File([text], "pasted-data.txt", {type: "text/plain;charset=utf-8"});
+  await importRecordsFile(file);
+  input.value = "";
 }
 
 async function generateLayoutFromInstruction() {
@@ -1179,7 +1194,11 @@ async function runExport() {
     const job = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/run", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({filename: $("#output-filename").value, strict: $("#strict-mode").checked})
+      body: JSON.stringify({
+        filename: $("#output-filename").value,
+        strict: $("#strict-mode").checked,
+        presentation_engine: $("#presentation-engine").value
+      })
     });
     pollJob(job.id);
   } catch (error) {
@@ -1210,6 +1229,7 @@ $("#refresh-projects").addEventListener("click", function () {
 });
 $("#template-file").addEventListener("change", function (event) { uploadTemplate(event.target.files[0]); });
 $("#records-file").addEventListener("change", function (event) { importRecordsFile(event.target.files[0]); });
+$("#import-pasted-text").addEventListener("click", function () { importPastedText().catch(function (error) { showToast(error.message, true); }); });
 $("#save-records").addEventListener("click", function () { saveDocument("records"); });
 $("#save-layout").addEventListener("click", function () { saveDocument("layout"); });
 $("#generate-layout").addEventListener("click", generateLayoutFromInstruction);

@@ -222,6 +222,28 @@ def record_count(data: Any) -> int:
     return len(buyer_records(data))
 
 
+def briefing_pages_from_buyers(buyers: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    for offset in range(0, len(buyers), 6):
+        entries = []
+        for buyer in buyers[offset : offset + 6]:
+            name = str(buyer.get("name", "") or "").strip()
+            bio = str(buyer.get("bio", "") or "").strip()
+            products = str(buyer.get("products", "") or "").strip()
+            entries.append({
+                "name": name,
+                "summary": bio if bio.startswith(name) else f"{name}{bio}",
+                "products": products if products.startswith("采购产品") else f"采购产品：{products}",
+            })
+        pages.append({"title": title or "买家商情", "buyers": entries})
+    return pages
+
+
+def presentation_engine(value: Any) -> str:
+    engine = str(value or "auto").strip().lower()
+    return engine if engine in {"auto", "office", "wps", "compatible"} else "auto"
+
+
 def inspect_output_ppt(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError("生成进程已结束，但没有找到有效的PPTX输出文件。")
@@ -462,7 +484,7 @@ class ConsoleState:
                 "output": "output",
                 "workspace": "workspace",
             },
-            "export": {"filename": "finished.pptx", "strict": False},
+            "export": {"filename": "finished.pptx", "strict": False, "presentation_engine": "auto"},
             "last_runs": [],
             "research_strategy": {
                 "preferred_industries": "",
@@ -909,6 +931,8 @@ class ConsoleState:
         source_path = paths["imports"] / source_name
         source_path.write_bytes(data)
         project = read_json(paths["project"])
+        if project.get("mode") in {"buyer_board", "buyer_briefing"}:
+            return self.import_buyer_document(paths, project, source_path)
         command = [
             sys.executable,
             str(skill_script("import_content_document.py")),
@@ -923,6 +947,44 @@ class ConsoleState:
         self.touch(paths, {"mode": "generic" if project.get("mode") == "generic" else project.get("mode", "generic")})
         records = read_json(paths["records"])
         return {"records": records, "record_count": len(buyer_records(records)), "source": str(source_path.name)}
+
+    def import_buyer_document(self, paths: dict[str, Path], project: dict[str, Any], source_path: Path) -> dict[str, Any]:
+        current = read_json(paths["records"])
+        globals_data = record_globals(current)
+        imported_path = paths["workspace"] / f"imported-buyers-{uuid.uuid4().hex[:8]}.json"
+        command = [
+            sys.executable,
+            str(skill_script("import_buyer_records.py")),
+            "--input", str(source_path),
+            "--output", str(imported_path),
+            "--country", str(globals_data.get("country", "")),
+            "--procurement-need", str(globals_data.get("procurement_need", "")),
+        ]
+        returncode, stdout, stderr = run_command(command)
+        if returncode != 0:
+            raise RuntimeError(stderr or stdout or "Buyer data import failed.")
+
+        imported = read_json(imported_path)
+        buyers = buyer_records(imported)
+        imported_globals = record_globals(imported)
+        country = str(imported_globals.get("country") or globals_data.get("country") or "")
+        procurement_need = str(imported_globals.get("procurement_need") or globals_data.get("procurement_need") or "")
+        if project.get("mode") == "buyer_board":
+            result = self.save_buyer_data(
+                str(project["slug"]),
+                {"country": country, "procurement_need": procurement_need, "buyers": buyers},
+            )
+            result.update({"record_count": len(buyer_records(result["records"])), "source": str(source_path.name)})
+            return result
+
+        normalized, warnings = self.normalize_buyers(buyers, country, procurement_need)
+        records = {
+            "globals": {**globals_data, "country": country, "procurement_need": procurement_need},
+            "pages": briefing_pages_from_buyers(normalized, procurement_need),
+        }
+        write_json(paths["records"], records)
+        self.touch(paths, {"mode": "buyer_briefing"})
+        return {"records": records, "record_count": len(normalized), "source": str(source_path.name), "warnings": warnings}
 
     def field_candidates_from_records(self, data: Any) -> list[str]:
         records = buyer_records(data)
@@ -1220,6 +1282,7 @@ class ConsoleState:
             "output": str(paths["output"] / filename),
             "report": str(paths["workspace"] / f"run-{job_id}" / "console_export_report.json"),
             "strict": bool(options.get("strict", False)),
+            "presentation_engine": presentation_engine(options.get("presentation_engine")),
             "stdout": "",
             "stderr": "",
         }
@@ -1264,7 +1327,11 @@ class ConsoleState:
         runs.insert(0, run)
         project["last_runs"] = runs[:20]
         if job.get("type") == "export":
-            project["export"] = {"filename": job.get("requested_filename", job["filename"]), "strict": job["strict"]}
+            project["export"] = {
+                "filename": job.get("requested_filename", job["filename"]),
+                "strict": job["strict"],
+                "presentation_engine": job.get("presentation_engine", "auto"),
+            }
         project["updated_at"] = utc_now()
         write_json(paths["project"], project)
 
@@ -1448,7 +1515,7 @@ class ConsoleState:
         template = paths["template"]
         layout = paths["layout"]
         repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
-        if os.name == "nt" and repeat and records:
+        if os.name == "nt" and job.get("presentation_engine") != "compatible" and repeat and records:
             source_index = int(repeat.get("source_slide_index") or repeat.get("start_slide_index") or 0)
             template_count = int(repeat.get("template_slide_count") or max(len(self.inspect_template(template).get("slides") or []) - source_index + 1, 1))
             copy_count = max(len(records) - template_count, 0)
@@ -1461,6 +1528,7 @@ class ConsoleState:
                     "-OutputPpt", str(template),
                     "-SourceSlideIndex", str(source_index),
                     "-CopyCount", str(copy_count),
+                    "-Engine", str(job.get("presentation_engine", "auto")),
                 ])
                 if code != 0:
                     raise RuntimeError(stderr or stdout or "PowerPoint 无法复制通用模板页。")
@@ -1497,7 +1565,7 @@ class ConsoleState:
             if returncode != 0:
                 raise RuntimeError(stderr or stdout or "PPTX生成失败。")
             preview_source = run_dir / "previews"
-            if not any(preview_source.glob("*.png")):
+            if job.get("presentation_engine") != "compatible" and not any(preview_source.glob("*.png")):
                 preview_code, preview_stdout, preview_stderr = run_command([
                     "powershell",
                     "-NoProfile",
@@ -1506,6 +1574,7 @@ class ConsoleState:
                     "-File", str(skill_script("export_ppt_previews.ps1")),
                     "-InputPpt", str(job["output"]),
                     "-PreviewDir", str(preview_source),
+                    "-Engine", str(job.get("presentation_engine", "auto")),
                 ])
                 if preview_code != 0:
                     stderr = "\n".join(part for part in (stderr, preview_stderr or preview_stdout) if part)

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InputPpt,
-    [Parameter(Mandatory = $true)][string]$PreviewDir
+    [Parameter(Mandatory = $true)][string]$PreviewDir,
+    [ValidateSet("auto", "office", "wps")][string]$Engine = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,8 +16,9 @@ $stagedInput = Join-Path $stagingRoot "input.pptx"
 $stagedPreviews = Join-Path $stagingRoot "previews"
 New-Item -ItemType Directory -Force -Path $stagedPreviews | Out-Null
 Copy-Item -LiteralPath $InputPpt -Destination $stagedInput -Force
-$powerPoint = New-Object -ComObject PowerPoint.Application
-$powerPoint.Visible = -1
+. (Join-Path $PSScriptRoot "presentation_automation.ps1")
+$session = Start-PresentationAutomation -Engine $Engine
+$powerPoint = $session.Application
 
 try {
     $presentation = $powerPoint.Presentations.Open($stagedInput, $true, $false, $false)
@@ -25,7 +27,7 @@ try {
     Copy-Item -Path (Join-Path $stagedPreviews "*.PNG") -Destination $PreviewDir -Force
 }
 finally {
-    $powerPoint.Quit()
+    Stop-PresentationAutomation -Session $session
     Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
