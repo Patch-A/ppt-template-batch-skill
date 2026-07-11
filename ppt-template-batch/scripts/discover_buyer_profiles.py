@@ -374,10 +374,11 @@ def chat_completion_content(api_key: str, base_url: str, payload: dict[str, Any]
     try:
         response = api_post_json(base_url, "/chat/completions", api_key, payload)
     except RuntimeError as exc:
-        if "response_format" not in str(exc) and "json_object" not in str(exc):
+        if not any(token in str(exc) for token in ("response_format", "json_object", "max_tokens")):
             raise
         fallback = dict(payload)
         fallback.pop("response_format", None)
+        fallback.pop("max_tokens", None)
         response = api_post_json(base_url, "/chat/completions", api_key, fallback)
     choices = response.get("choices") or []
     if not choices:
@@ -395,6 +396,32 @@ def repair_model_json(api_key: str, base_url: str, model_name: str, invalid_cont
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0,
+    })
+    return parse_json_payload(content)
+
+
+def retry_compact_buyer_json(
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    user_prompt: str,
+    expected_count: int,
+) -> dict[str, Any]:
+    compact_instruction = f"""
+The prior response was incomplete. Start over and return valid JSON only.
+Return at most {expected_count} buyers. To keep the response complete, each buyer must include only:
+name, country, website, products, bio, research_notes, buyer_type, demand_scenarios, local_presence, import_signal, evidence, source_urls.
+Use one source URL per buyer at most. Do not include logo_path, site_image_path, scores, confidence, risks, markdown, or commentary.
+"""
+    content = chat_completion_content(api_key, base_url, {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT + " Return compact valid JSON only."},
+            {"role": "user", "content": user_prompt + compact_instruction},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1,
+        "max_tokens": 8192,
     })
     return parse_json_payload(content)
 
@@ -522,6 +549,7 @@ def fetch_json_with_chat(
     base_url: str,
     model_name: str,
     user_prompt: str,
+    expected_count: int,
 ) -> list[dict[str, Any]]:
     payload = {
         "model": model_name,
@@ -531,6 +559,7 @@ def fetch_json_with_chat(
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
+        "max_tokens": 8192,
     }
     content = chat_completion_content(api_key, base_url, payload)
     try:
@@ -539,11 +568,14 @@ def fetch_json_with_chat(
         try:
             result = repair_model_json(api_key, base_url, model_name, content)
         except Exception as repair_exc:
-            location = f"line {exc.lineno}, column {exc.colno}" if isinstance(exc, json.JSONDecodeError) else str(exc)
-            raise RuntimeError(
-                "模型返回的买家资料格式不完整，系统已自动尝试修复一次但仍未成功。"
-                f"原始格式问题：{location}。请重试搜索或更换模型。"
-            ) from repair_exc
+            try:
+                result = retry_compact_buyer_json(api_key, base_url, model_name, user_prompt, expected_count)
+            except Exception as compact_exc:
+                location = f"line {exc.lineno}, column {exc.colno}" if isinstance(exc, json.JSONDecodeError) else str(exc)
+                raise RuntimeError(
+                    "模型返回的买家资料格式不完整，系统已自动修复和精简重试各一次但仍未成功。"
+                    f"原始格式问题：{location}。请重试搜索或更换模型。"
+                ) from compact_exc
     buyers = result.get("buyers", [])
     if not isinstance(buyers, list):
         raise RuntimeError("模型返回的 buyers 字段不是列表，已停止回填以保护现有资料。")
@@ -568,7 +600,9 @@ def fetch_buyers(
     api_key = require_api_key()
     resolved_mode = clean_research_mode(research_mode)
     candidate_multiplier = max(2, min(5, int((strategy or {}).get("candidate_multiplier", 3) or 3)))
-    candidate_count = min(60, max(buyer_count, buyer_count * candidate_multiplier))
+    # Candidate records contain long Chinese bios and evidence fields. Keep the
+    # first pass compact enough that compatible models do not truncate JSON.
+    candidate_count = min(16, max(buyer_count, buyer_count + min(candidate_multiplier, 4)))
     candidate_prompt = build_user_prompt(
         country,
         procurement_need,
@@ -588,7 +622,7 @@ def fetch_buyers(
         )
         mode = "openai_web_search"
     else:
-        candidates = fetch_json_with_chat(api_key, resolved_base_url, model_name, candidate_prompt)
+        candidates = fetch_json_with_chat(api_key, resolved_base_url, model_name, candidate_prompt, candidate_count)
         mode = "compatible_chat_no_builtin_search" if provider_name != "openai" else "openai_chat_no_builtin_search"
     shortlist_prompt = build_user_prompt(
         country,
@@ -608,7 +642,7 @@ def fetch_buyers(
             "qualified_buyer_shortlist",
         )
     else:
-        buyers = fetch_json_with_chat(api_key, resolved_base_url, model_name, shortlist_prompt)
+        buyers = fetch_json_with_chat(api_key, resolved_base_url, model_name, shortlist_prompt, buyer_count)
     if not buyers and candidates:
         buyers = candidates[:buyer_count]
         for item in buyers:
