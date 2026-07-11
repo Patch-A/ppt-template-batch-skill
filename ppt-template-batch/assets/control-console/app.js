@@ -522,9 +522,8 @@ function buyerEntryHtml(buyer, index) {
     escapeHtml(buyer.website) + '" placeholder="www.example.com"></label></div>' +
     '<div class="buyer-field products"><label>采购产品<input data-buyer-index="' + index + '" data-field="products" value="' +
     escapeHtml(buyer.products) + '" placeholder="用中文顿号分隔具体采购产品"></label></div>' +
-    '<div class="buyer-field bio"><label>企业简介<textarea data-buyer-index="' + index + '" data-field="bio" placeholder="填写120-130个中文字符的完整企业介绍">' +
-    escapeHtml(buyer.bio) + '</textarea></label><div class="field-meta ' + (count >= 120 && count <= 130 ? "good" : "") +
-    '" data-bio-count="' + index + '">' + count + ' / 120-130 个中文字符</div></div>' +
+    '<div class="buyer-field bio"><label>企业简介<textarea data-buyer-index="' + index + '" data-field="bio" placeholder="填写完整企业介绍">' +
+    escapeHtml(buyer.bio) + '</textarea></label><div class="field-meta" data-bio-count="' + index + '">' + count + ' 个中文字符</div></div>' +
     '<div class="asset-state">' + logoState + siteState + '</div>' + qualification + '</div></article>';
 }
 
@@ -561,8 +560,7 @@ function renderBuyerForm() {
       if (field === "bio") {
         const count = chineseCount(input.value);
         const meta = $('[data-bio-count="' + index + '"]');
-        meta.textContent = count + " / 120-130 个中文字符";
-        meta.classList.toggle("good", count >= 120 && count <= 130);
+        meta.textContent = count + " 个中文字符";
       }
       if (field === "name") {
         const heading = input.closest(".buyer-entry").querySelector(".buyer-entry-title strong");

@@ -1129,7 +1129,13 @@ class ConsoleState:
             }
         return {"ready": True, "generated": True, "layout_config": read_json(paths["layout"])}
 
-    def normalize_buyers(self, buyers: list[Any], default_country: str, procurement_need: str = "") -> tuple[list[dict[str, Any]], list[str]]:
+    def normalize_buyers(
+        self,
+        buyers: list[Any],
+        default_country: str,
+        procurement_need: str = "",
+        enforce_research_copy_rules: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         normalized = []
         warnings = []
         for index, raw in enumerate(buyers, start=1):
@@ -1144,13 +1150,13 @@ class ConsoleState:
                 except (TypeError, ValueError):
                     item[score_key] = 0
             item["country"] = item["country"] or default_country
-            if item["research_notes"] or item["buyer_type"]:
+            if enforce_research_copy_rules:
                 item["products"] = normalize_products(item["products"], procurement_need)
                 item["bio"] = pad_or_trim_bio(item["bio"])
             if not item["name"]:
                 warnings.append(f"第{index}家买家缺少企业名称。")
             chinese_count = sum(1 for char in item["bio"] if "\u4e00" <= char <= "\u9fff")
-            if item["bio"] and not 120 <= chinese_count <= 130:
+            if enforce_research_copy_rules and item["bio"] and not 120 <= chinese_count <= 130:
                 label = item["name"] or f"第{index}家买家"
                 warnings.append(f"{label}简介目前为{chinese_count}个中文字符，建议调整到120-130字。")
             normalized.append(item)
@@ -1163,7 +1169,12 @@ class ConsoleState:
         raw_buyers = payload.get("buyers")
         if not isinstance(raw_buyers, list):
             raise ValueError("买家资料必须是列表。")
-        buyers, warnings = self.normalize_buyers(raw_buyers, country, procurement_need)
+        buyers, warnings = self.normalize_buyers(
+            raw_buyers,
+            country,
+            procurement_need,
+            bool(payload.get("enforce_research_copy_rules", False)),
+        )
         current_data = read_json(paths["records"])
         globals_data = record_globals(current_data)
         project = read_json(paths["project"])
@@ -1402,6 +1413,7 @@ class ConsoleState:
                 "country": job["country"],
                 "procurement_need": job["procurement_need"],
                 "buyers": buyers,
+                "enforce_research_copy_rules": True,
             })
             report_data = {
                 "buyer_count": len(saved["records"]["records"]),
