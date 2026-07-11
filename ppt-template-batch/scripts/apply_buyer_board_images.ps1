@@ -90,9 +90,12 @@ function Fit-PictureIntoBox {
     )
 
     $ratio = [Math]::Min($BoxWidth / $Shape.Width, $BoxHeight / $Shape.Height)
+    $finalWidth = $Shape.Width * $ratio
+    $finalHeight = $Shape.Height * $ratio
+    $Shape.LockAspectRatio = 0
+    $Shape.Width = $finalWidth
+    $Shape.Height = $finalHeight
     $Shape.LockAspectRatio = -1
-    $Shape.Width = $Shape.Width * $ratio
-    $Shape.Height = $Shape.Height * $ratio
     $Shape.Left = $BoxLeft + (($BoxWidth - $Shape.Width) / 2)
     $Shape.Top = $BoxTop + (($BoxHeight - $Shape.Height) / 2)
 }
@@ -107,9 +110,12 @@ function Fill-PictureIntoBox {
     )
 
     $ratio = [Math]::Max($BoxWidth / $Shape.Width, $BoxHeight / $Shape.Height)
+    $finalWidth = $Shape.Width * $ratio
+    $finalHeight = $Shape.Height * $ratio
+    $Shape.LockAspectRatio = 0
+    $Shape.Width = $finalWidth
+    $Shape.Height = $finalHeight
     $Shape.LockAspectRatio = -1
-    $Shape.Width = $Shape.Width * $ratio
-    $Shape.Height = $Shape.Height * $ratio
     $Shape.Left = $BoxLeft + (($BoxWidth - $Shape.Width) / 2)
     $Shape.Top = $BoxTop + (($BoxHeight - $Shape.Height) / 2)
 }

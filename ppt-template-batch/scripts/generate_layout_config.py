@@ -170,15 +170,15 @@ def detect_image_slots(slide, table_shape=None, slide_width: int | None = None, 
             logo = {
                 "mode": "add",
                 "left": emu_to_px(table_left),
-                "top": emu_to_px(max(table_top - 55 * EMU_PER_PIXEL, 0)),
-                "width": 150.0,
+                "top": emu_to_px(max(table_top - 44 * EMU_PER_PIXEL, 0)),
+                "width": 172.0,
                 "height": 34.0,
             }
         if site is None and slide_width and slide_height and table_right < slide_width - 240 * EMU_PER_PIXEL:
-            site_left = table_right + 45 * EMU_PER_PIXEL
-            site_top = max(table_top - 32 * EMU_PER_PIXEL, 0)
+            site_left = table_right + 12 * EMU_PER_PIXEL
+            site_top = table_top
             site_right = slide_width - 36 * EMU_PER_PIXEL
-            site_bottom = min(table_bottom - 25 * EMU_PER_PIXEL, slide_height - 80 * EMU_PER_PIXEL)
+            site_bottom = min(table_bottom, slide_height - 80 * EMU_PER_PIXEL)
             if site_right > site_left and site_bottom > site_top:
                 site = {
                     "mode": "add",
@@ -269,6 +269,7 @@ def main() -> int:
         "cover": cover,
         "content": content,
         "images": {
+            "layout_version": 2,
             "slides": image_slots,
         },
         "notes": [

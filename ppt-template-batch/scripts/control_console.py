@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -177,6 +178,10 @@ def safe_filename(value: str) -> str:
     name = Path(value or "finished.pptx").name
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", Path(name).stem).strip("-. ") or "finished"
     return f"{stem[:96]}.pptx"
+
+
+def natural_sort_key(value: str) -> list[Any]:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
 def ensure_pptx(data: bytes) -> None:
@@ -391,12 +396,28 @@ class ConsoleState:
         items = sorted(paths["output"].glob("*.pptx"), key=lambda item: item.stat().st_mtime, reverse=True)
         for path in items:
             stat = path.stat()
+            preview_dir = paths["output"] / ".previews" / path.stem
+            preview_count = len(list(preview_dir.glob("*.png"))) if preview_dir.is_dir() else 0
             result.append({
                 "name": path.name,
                 "size": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                "preview_count": preview_count,
             })
         return result
+
+    def unique_output_filename(self, paths: dict[str, Path], requested: str) -> str:
+        filename = safe_filename(requested)
+        if not (paths["output"] / filename).exists():
+            return filename
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        source = Path(filename)
+        candidate = f"{source.stem}-{stamp}{source.suffix}"
+        counter = 2
+        while (paths["output"] / candidate).exists():
+            candidate = f"{source.stem}-{stamp}-{counter}{source.suffix}"
+            counter += 1
+        return candidate
 
     def list_projects(self) -> list[dict[str, Any]]:
         result = []
@@ -844,7 +865,10 @@ class ConsoleState:
                 "cover_country": country_line,
                 "content_title": title,
             })
-            if not has_buyer_image_slots(current):
+            notes = current.get("notes") if isinstance(current.get("notes"), list) else []
+            generated_scaffold = "This file is a scaffold generated from a reference PPT." in notes
+            image_layout_version = int((current.get("images") or {}).get("layout_version", 0) or 0)
+            if not has_buyer_image_slots(current) or (generated_scaffold and image_layout_version < 2):
                 generated_path = paths["workspace"] / "buyer-layout-images.generated.json"
                 command = [
                     sys.executable,
@@ -860,7 +884,9 @@ class ConsoleState:
                     generated = read_json(generated_path)
                     if has_buyer_image_slots(generated):
                         current["images"] = generated["images"]
-                        current.setdefault("notes", []).append("Image insertion regions were generated from the buyer-board table layout.")
+                        image_note = "Image insertion regions were generated from the buyer-board table layout."
+                        if image_note not in current.setdefault("notes", []):
+                            current["notes"].append(image_note)
                 else:
                     return {"ready": False, "warning": "图片区域自动识别失败，请重新上传模板后重试。", "details": stderr or stdout}
             write_json(paths["layout"], current)
@@ -1023,7 +1049,8 @@ class ConsoleState:
         if project.get("mode") == "buyer_briefing" and pipeline_mode != "buyer_briefing":
             raise ValueError(_u(r"\u5f53\u524d\u9879\u76ee\u662f\u4e70\u5bb6\u5546\u60c5\uff0c\u4f46\u7248\u5f0f\u6620\u5c04\u4e0d\u662f6\u4e70\u5bb6\u5546\u60c5\u7ed3\u6784\uff0c\u8bf7\u5148\u4f7f\u7528\u793a\u4f8b\u6620\u5c04\u6216\u68c0\u67e5\u201c\u7248\u5f0f\u6620\u5c04\u201d\u3002"))
         job_id = uuid.uuid4().hex[:12]
-        filename = safe_filename(str(options.get("filename", "finished.pptx")))
+        requested_filename = safe_filename(str(options.get("filename", "finished.pptx")))
+        filename = self.unique_output_filename(paths, requested_filename)
         job = {
             "id": job_id,
             "type": "export",
@@ -1032,6 +1059,7 @@ class ConsoleState:
             "status": "queued",
             "created_at": utc_now(),
             "filename": filename,
+            "requested_filename": requested_filename,
             "output": str(paths["output"] / filename),
             "report": str(paths["workspace"] / f"run-{job_id}" / "console_export_report.json"),
             "strict": bool(options.get("strict", False)),
@@ -1079,7 +1107,7 @@ class ConsoleState:
         runs.insert(0, run)
         project["last_runs"] = runs[:20]
         if job.get("type") == "export":
-            project["export"] = {"filename": job["filename"], "strict": job["strict"]}
+            project["export"] = {"filename": job.get("requested_filename", job["filename"]), "strict": job["strict"]}
         project["updated_at"] = utc_now()
         write_json(paths["project"], project)
 
@@ -1282,6 +1310,25 @@ class ConsoleState:
             returncode, stdout, stderr = run_command(command)
             if returncode != 0:
                 raise RuntimeError(stderr or stdout or "PPTX生成失败。")
+            preview_source = run_dir / "previews"
+            if job["pipeline_mode"] in {"buyer_board", "buyer_briefing"} and not any(preview_source.glob("*.png")):
+                preview_code, preview_stdout, preview_stderr = run_command([
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", str(skill_script("export_ppt_previews.ps1")),
+                    "-InputPpt", str(job["output"]),
+                    "-PreviewDir", str(preview_source),
+                ])
+                if preview_code != 0:
+                    stderr = "\n".join(part for part in (stderr, preview_stderr or preview_stdout) if part)
+            preview_target = paths["output"] / ".previews" / Path(job["filename"]).stem
+            preview_files = sorted(preview_source.glob("*.png"))
+            if preview_files:
+                if preview_target.exists():
+                    shutil.rmtree(preview_target)
+                shutil.copytree(preview_source, preview_target)
             output_metadata = inspect_output_ppt(Path(job["output"]))
             report_data = read_json(Path(job["report"])) if Path(job["report"]).is_file() else {
                 "ok": True,
@@ -1290,6 +1337,7 @@ class ConsoleState:
             report_data.update(output_metadata)
             report_data["pipeline_mode"] = job["pipeline_mode"]
             report_data["record_count"] = record_count(read_json(paths["records"]))
+            report_data["preview_count"] = len(preview_files)
             if job["pipeline_mode"] in {"buyer_board", "buyer_briefing"}:
                 write_json(Path(job["report"]), report_data)
             self.set_job(
@@ -1381,6 +1429,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self.send_json(self.state.get_job(parts[2]))
             elif len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "output":
                 self.send_output(parts[2], parts[4])
+            elif len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "preview":
+                self.send_preview(parts[2], parts[4], parts[5])
             elif urlparse(self.path).path.startswith("/api/"):
                 raise FileNotFoundError("接口不存在。")
             else:
@@ -1447,6 +1497,26 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
         self.send_header("Content-Disposition", disposition)
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_preview(self, slug: str, filename: str, index_value: str) -> None:
+        paths = self.state.require(slug)
+        stem = Path(filename).stem
+        try:
+            index = int(index_value)
+        except ValueError as exc:
+            raise FileNotFoundError("预览页不存在。") from exc
+        preview_dir = within(paths["output"], paths["output"] / ".previews" / stem)
+        images = sorted(preview_dir.glob("*.png"), key=lambda item: natural_sort_key(item.name))
+        if index < 1 or index > len(images):
+            raise FileNotFoundError("预览页不存在。")
+        target = within(preview_dir, images[index - 1])
+        data = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=300")
         self.end_headers()
         self.wfile.write(data)
 

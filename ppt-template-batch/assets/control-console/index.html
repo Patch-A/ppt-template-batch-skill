@@ -212,6 +212,14 @@
     </section>
   </div>
 
+  <div id="preview-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <div class="modal-backdrop" data-close-preview></div>
+    <section class="modal-dialog preview-dialog">
+      <div class="modal-head"><div><span class="eyebrow">PPT 成品预览</span><h2 id="preview-title">演示文稿</h2></div><button class="close-button" data-close-preview type="button" title="关闭">&times;</button></div>
+      <div id="preview-gallery" class="preview-gallery"></div>
+    </section>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

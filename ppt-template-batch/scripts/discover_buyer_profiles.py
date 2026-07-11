@@ -198,9 +198,14 @@ def pad_or_trim_bio(text: str) -> str:
 def normalize_products(value: str, procurement_need: str) -> str:
     product = re.sub(r"\s+", "", value or "")
     product = re.sub(r"^(?:采购产品|采购品类|采购需求)[:：]", "", product)
-    product = re.split(r"(?:用于|用以|适用于|主要用于|以满足|进行加工|加工)", product, maxsplit=1)[0]
+    product = re.split(r"(?:主要用于|适用于|用于|用以|以满足|进行加工)", product, maxsplit=1)[0]
     product = product.strip("，、；。:：")
-    return product or re.sub(r"\s+", "", procurement_need).strip("，、；。:：")
+    fallback = re.sub(r"\s+", "", procurement_need or "")
+    fallback = re.split(r"(?:主要用于|适用于|用于|用以|以满足|进行加工)", fallback, maxsplit=1)[0]
+    fallback = fallback.strip("，、；。:：")
+    if not product or re.search(r"(?:[三四五六七八九十]轴|联动|精密|数控|高速|重型|大型|小型|智能)$", product):
+        return fallback or product
+    return product
 
 
 def build_strategy_text(strategy: dict[str, Any] | None) -> str:

@@ -360,10 +360,33 @@ function renderOutputs(outputs) {
   const slug = state.current.project.slug;
   list.innerHTML = outputs.map(function (item) {
     const href = "/api/projects/" + encodeURIComponent(slug) + "/output/" + encodeURIComponent(item.name);
+    const preview = item.preview_count ? '<button class="output-preview" data-preview-name="' + escapeHtml(item.name) + '" data-preview-count="' + item.preview_count + '" type="button">预览</button>' : '';
     return '<div class="output-item"><strong>' + escapeHtml(item.name) + '</strong><small>' +
       formatBytes(item.size) + " · " + formatDate(item.modified_at) +
-      '</small><a href="' + href + '">下载</a></div>';
+      '</small><div class="output-actions">' + preview + '<a href="' + href + '">下载</a></div></div>';
   }).join("");
+  $$(".output-preview").forEach(function (button) {
+    button.addEventListener("click", function () {
+      openPreview(button.dataset.previewName, Number(button.dataset.previewCount || 0));
+    });
+  });
+}
+
+function openPreview(filename, count) {
+  if (!state.current || !count) return;
+  const slug = state.current.project.slug;
+  $("#preview-title").textContent = filename;
+  $("#preview-gallery").innerHTML = Array.from({length: count}, function (_, index) {
+    const page = index + 1;
+    const src = "/api/projects/" + encodeURIComponent(slug) + "/preview/" + encodeURIComponent(filename) + "/" + page;
+    return '<figure><img src="' + src + '" alt="第 ' + page + ' 页预览" loading="' + (page > 2 ? 'lazy' : 'eager') + '"><figcaption>第 ' + page + ' 页</figcaption></figure>';
+  }).join("");
+  $("#preview-modal").classList.remove("hidden");
+}
+
+function closePreview() {
+  $("#preview-modal").classList.add("hidden");
+  $("#preview-gallery").innerHTML = "";
 }
 
 function updateModelBadge() {
@@ -1119,6 +1142,9 @@ $$("[data-probe-model]").forEach(function (button) {
 $("#save-model-settings").addEventListener("click", saveModelSettings);
 $$("[data-close-model]").forEach(function (button) {
   button.addEventListener("click", closeModelSettings);
+});
+$$('[data-close-preview]').forEach(function (button) {
+  button.addEventListener("click", closePreview);
 });
 
 refreshProjects().then(function () {
