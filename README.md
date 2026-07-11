@@ -29,7 +29,7 @@ Use this skill when you want to turn any PPT/PPTX template into a repeatable bat
 
 ## Local control console
 
-A browser-based local console is included for project management, template upload, preset selection, buyer-form entry, country plus procurement-need research, session-only model provider settings, upstream model-list fetching, JSON editing, slide-structure inspection, export controls, reports, and finished-file downloads.
+A browser-based local console is included for generic PPT project management, template upload, text or document import, natural-language layout mapping, JSON editing, slide-structure inspection, repeated-page selection, export controls, reports, and finished-file downloads. Buyer form entry and procurement research are optional preset capabilities.
 
 ~~~powershell
 python scripts/run_control_console.py
