@@ -153,7 +153,8 @@ def pad_or_trim_bio(text: str) -> str:
     raw = re.sub(r"\s+", "", text or "")
     allowed_punctuation = "\uff0c\u3002\u3001\uff1b\uff1a"
     chars = [ch for ch in raw if "\u4e00" <= ch <= "\u9fff" or ch in allowed_punctuation]
-    result = "".join(chars).strip(allowed_punctuation)
+    result = "".join(chars).strip("\uff0c\u3001\uff1a")
+    result = re.sub(r"(?:\u91c7\u8d2d\u7a33\u5b9a\u3002){2,}", "\u91c7\u8d2d\u8ba1\u5212\u7a33\u5b9a\uff0c\u5408\u4f5c\u9700\u6c42\u660e\u786e\u3002", result)
 
     # A fixed-length response may already have been cut in the middle of a
     # clause. Keep only complete sentences before adding the required padding.
@@ -181,14 +182,15 @@ def pad_or_trim_bio(text: str) -> str:
         result += "\u3002"
 
     fillers = ("该企业重视设备精度、交付效率和长期售后支持。", "采购计划稳定，合作需求明确。", "具备持续采购能力。")
+    short_fillers = ("采购稳定。", "需求明确。", "合作持续。")
     filler_index = 0
     while chinese_char_count(result) < 120:
         filler = fillers[filler_index % len(fillers)]
-        filler_index += 1
         if chinese_char_count(result + filler) <= 130:
             result += filler
         else:
-            result += "采购稳定。"
+            result += short_fillers[filler_index % len(short_fillers)]
+        filler_index += 1
 
     return result
 

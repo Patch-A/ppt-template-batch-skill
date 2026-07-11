@@ -211,6 +211,27 @@ def record_globals(data: Any) -> dict[str, Any]:
     return {}
 
 
+def record_count(data: Any) -> int:
+    if isinstance(data, dict) and isinstance(data.get("pages"), list):
+        return sum(len(page.get("buyers") or []) for page in data["pages"] if isinstance(page, dict))
+    return len(buyer_records(data))
+
+
+def inspect_output_ppt(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("生成进程已结束，但没有找到有效的PPTX输出文件。")
+    try:
+        from pptx import Presentation
+        slide_count = len(Presentation(path).slides)
+    except Exception as exc:
+        raise RuntimeError(f"PPTX输出文件无法读取：{exc}") from exc
+    return {
+        "output": str(path),
+        "output_size": path.stat().st_size,
+        "slide_count": slide_count,
+    }
+
+
 def is_buyer_layout(config: Any) -> bool:
     return isinstance(config, dict) and isinstance(config.get("cover"), dict) and isinstance(config.get("content"), dict)
 
@@ -1031,6 +1052,16 @@ class ConsoleState:
         with self.jobs_lock:
             self.jobs[job_id].update(updates)
 
+    def prune_jobs(self, keep_finished: int = 100) -> None:
+        with self.jobs_lock:
+            finished = sorted(
+                (job for job in self.jobs.values() if job.get("status") in {"completed", "failed"}),
+                key=lambda item: str(item.get("finished_at") or item.get("created_at") or ""),
+                reverse=True,
+            )
+            for job in finished[keep_finished:]:
+                self.jobs.pop(str(job["id"]), None)
+
     def record_run(self, paths: dict[str, Path], job: dict[str, Any]) -> None:
         project = read_json(paths["project"])
         runs = list(project.get("last_runs") or [])
@@ -1158,6 +1189,7 @@ class ConsoleState:
                 finished_at=utc_now(),
             )
         self.record_run(paths, self.get_job(job_id))
+        self.prune_jobs()
     def _buyer_export_command(self, job: dict[str, Any], paths: dict[str, Path], run_dir: Path) -> list[str]:
         data = read_json(paths["records"])
         buyers = buyer_records(data)
@@ -1248,17 +1280,22 @@ class ConsoleState:
                 if job["strict"]:
                     command.append("--strict")
             returncode, stdout, stderr = run_command(command)
+            if returncode != 0:
+                raise RuntimeError(stderr or stdout or "PPTX生成失败。")
+            output_metadata = inspect_output_ppt(Path(job["output"]))
             report_data = read_json(Path(job["report"])) if Path(job["report"]).is_file() else {
-                "ok": returncode == 0,
+                "ok": True,
                 "pipeline_mode": job["pipeline_mode"],
-                "output": job["output"],
             }
+            report_data.update(output_metadata)
+            report_data["pipeline_mode"] = job["pipeline_mode"]
+            report_data["record_count"] = record_count(read_json(paths["records"]))
             if job["pipeline_mode"] in {"buyer_board", "buyer_briefing"}:
                 write_json(Path(job["report"]), report_data)
             self.set_job(
                 job_id,
-                status="completed" if returncode == 0 else "failed",
-                stage="已完成" if returncode == 0 else "生成失败",
+                status="completed",
+                stage="已完成",
                 returncode=returncode,
                 stdout=stdout,
                 stderr=stderr,
@@ -1275,6 +1312,7 @@ class ConsoleState:
                 finished_at=utc_now(),
             )
         self.record_run(paths, self.get_job(job_id))
+        self.prune_jobs()
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):

@@ -759,8 +759,7 @@ async function pollResearch(jobId) {
         $("#research-status").textContent = "没有生成可回填买家";
         return;
       }
-      const slug = state.current.project.slug;
-      await loadProject(slug);
+      await loadProject(job.project);
       $("#research-progress").className = "research-progress completed";
       $("#research-status").textContent = "搜索完成，已回填买家表单";
       $("#research-log").textContent = researchJobText(job);
@@ -793,7 +792,7 @@ async function runResearch() {
     $("#research-progress").className = "research-progress";
     $("#research-progress").classList.remove("hidden");
     $("#research-status").textContent = "正在启动买家搜索";
-    $("#research-log").textContent = "将生成并整理企业名称、官网、采购产品和120字简介。";
+    $("#research-log").textContent = "将生成并整理企业名称、官网、具体采购产品和120-130字完整简介。";
     const job = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/research-buyers", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -993,7 +992,7 @@ async function pollJob(jobId) {
     $("#run-export").disabled = false;
     if (job.status === "completed") {
       showToast("PPTX 已生成");
-      await loadProject(state.current.project.slug);
+      await loadProject(job.project);
     } else {
       showToast("导出失败，请查看运行日志", true);
     }
