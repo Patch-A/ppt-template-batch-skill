@@ -879,6 +879,25 @@ class ConsoleState:
         for entry in preview["entries"]:
             if entry["kind"].endswith("图片") and entry["sample"] and not Path(entry["sample"]).is_file():
                 warnings.append(f"{entry['target']} 的示例图片路径不可用，导出时会保留空位。")
+        mapped_fields = self.mapped_record_fields(config)
+        for field in sorted(mapped_fields):
+            missing_count = 0
+            for record in records:
+                value: Any = record
+                for part in field.split("."):
+                    value = value.get(part) if isinstance(value, dict) else None
+                if value is None or not str(value).strip():
+                    missing_count += 1
+            if missing_count:
+                warnings.append(f"已映射字段“{field}”有 {missing_count}/{len(records)} 条资料为空。")
+        for record_index, record in enumerate(records, start=1):
+            for field, value in record.items():
+                if not isinstance(value, str):
+                    continue
+                if "{{" in value or "}}" in value:
+                    warnings.append(f"第 {record_index} 条资料的“{field}”仍含占位符标记。")
+                if len(value) > 1200:
+                    warnings.append(f"第 {record_index} 条资料的“{field}”超过 1200 个字符，建议确认版面容量。")
         repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
         template_slide_count = len(self.inspect_template(paths["template"]).get("slides") or [])
         expected_slide_count = template_slide_count + max(len(records) - 1, 0) if repeat else max(template_slide_count, 1)
@@ -925,8 +944,8 @@ class ConsoleState:
         paths = self.require(slug)
         source_name = safe_filename(filename).replace(".pptx", Path(filename or "document.txt").suffix or ".txt")
         suffix = Path(source_name).suffix.lower()
-        if suffix not in {".txt", ".md", ".csv", ".json", ".docx"}:
-            raise ValueError("资料导入支持 TXT、Markdown、CSV、JSON、DOCX。")
+        if suffix not in {".txt", ".md", ".csv", ".json", ".docx", ".xlsx"}:
+            raise ValueError("资料导入支持 TXT、Markdown、CSV、JSON、DOCX、XLSX。")
         paths["imports"].mkdir(parents=True, exist_ok=True)
         source_path = paths["imports"] / source_name
         source_path.write_bytes(data)
@@ -947,6 +966,35 @@ class ConsoleState:
         self.touch(paths, {"mode": "generic" if project.get("mode") == "generic" else project.get("mode", "generic")})
         records = read_json(paths["records"])
         return {"records": records, "record_count": len(buyer_records(records)), "source": str(source_path.name)}
+
+    def rename_generic_fields(self, slug: str, mapping: dict[str, Any]) -> dict[str, Any]:
+        paths = self.require(slug)
+        project = read_json(paths["project"])
+        if project.get("mode") != "generic":
+            raise ValueError("Field mapping is available for generic PPT projects only.")
+        data = read_json(paths["records"])
+        records = buyer_records(data)
+        normalized_mapping = {
+            str(source).strip(): re.sub(r"[^\w\u4e00-\u9fff-]+", "_", str(target or "").strip())[:80]
+            for source, target in mapping.items()
+            if str(source).strip() and str(target or "").strip() and str(source).strip() != str(target).strip()
+        }
+        if not normalized_mapping:
+            return {"records": data, "fields": self.field_candidates_from_records(data)}
+        for record in records:
+            for source, target in normalized_mapping.items():
+                if source not in record:
+                    continue
+                value = record.pop(source)
+                if target not in record or not str(record.get(target) or "").strip():
+                    record[target] = value
+        if isinstance(data, dict):
+            data["records"] = records
+        else:
+            data = {"globals": {}, "records": records}
+        write_json(paths["records"], data)
+        self.touch(paths)
+        return {"records": data, "fields": self.field_candidates_from_records(data)}
 
     def import_buyer_document(self, paths: dict[str, Path], project: dict[str, Any], source_path: Path) -> dict[str, Any]:
         current = read_json(paths["records"])
@@ -996,6 +1044,38 @@ class ConsoleState:
                 if str(value or "").strip():
                     seen.append(key)
         return seen or ["title", "content"]
+
+    def mapped_record_fields(self, config: dict[str, Any]) -> set[str]:
+        fields: set[str] = set()
+
+        def collect_specs(specs: Any) -> None:
+            if not isinstance(specs, list):
+                return
+            for spec in specs:
+                if not isinstance(spec, dict):
+                    continue
+                for value in (spec.get("field"), spec.get("template")):
+                    if not isinstance(value, str):
+                        continue
+                    if value.startswith("globals."):
+                        continue
+                    if value.startswith("record."):
+                        fields.add(value.split(".", 1)[1])
+                    elif value and "{" not in value:
+                        fields.add(value)
+                    for token in re.findall(r"\{record\.([^}]+)\}", value):
+                        fields.add(token)
+
+        for slide in config.get("slides", []) if isinstance(config.get("slides"), list) else []:
+            if isinstance(slide, dict):
+                collect_specs(slide.get("texts"))
+                collect_specs(slide.get("images"))
+                collect_specs(slide.get("tables"))
+        repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
+        collect_specs(repeat.get("texts"))
+        collect_specs(repeat.get("images"))
+        collect_specs(repeat.get("tables"))
+        return fields
 
     def generate_layout_from_instruction(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
         paths = self.require(slug)
@@ -1726,6 +1806,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 filename = unquote(params.get("filename", "") or self.headers.get("X-Filename", "document.txt"))
                 instruction = unquote(params.get("instruction", "") or self.headers.get("X-Instruction", ""))
                 self.send_json(self.state.import_records_document(parts[2], self.read_body(MAX_UPLOAD_BYTES), filename, instruction))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "field-map":
+                payload = self.read_json_body()
+                mapping = payload.get("mapping") if isinstance(payload, dict) else None
+                if not isinstance(mapping, dict):
+                    raise ValueError("Field mapping must be an object.")
+                self.send_json(self.state.rename_generic_fields(parts[2], mapping))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-from-instruction":
                 self.send_json(self.state.generate_layout_from_instruction(parts[2], self.read_json_body()))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-preview":

@@ -389,6 +389,17 @@ input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent);
 .import-actions button { height: 32px; border: 1px solid var(--separator-strong); border-radius: 7px; background: #fff; color: var(--text); font-size: 10px; font-weight: 600; }
 .import-actions > span { max-width: 180px; color: var(--secondary); font-size: 9px; line-height: 1.4; }
 
+.generic-field-map { padding: 15px 16px; display: grid; grid-template-columns: minmax(220px, .7fr) minmax(260px, 1.3fr) auto; gap: 14px; align-items: end; border-bottom: 1px solid var(--separator); background: #fff; }
+.generic-field-map strong { display: block; margin-top: 3px; font-size: 12px; }
+.generic-field-map p { margin: 4px 0 0; color: var(--secondary); font-size: 9px; line-height: 1.5; }
+.field-map-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.field-map-row { display: grid; grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr); gap: 5px; align-items: center; }
+.field-map-row span { overflow: hidden; color: var(--secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.field-map-row b { color: var(--tertiary); text-align: center; font-size: 11px; font-weight: 500; }
+.field-map-row input { min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--separator-strong); border-radius: 6px; background: #fff; color: var(--text); font-size: 9px; outline: none; }
+.field-map-row input:focus { border-color: var(--accent); }
+.generic-field-map > button { height: 32px; padding: 0 10px; border: 1px solid var(--separator-strong); border-radius: 7px; background: #fff; color: var(--text); font-size: 10px; font-weight: 600; }
+
 .natural-layout { padding: 14px; display: grid; grid-template-columns: minmax(175px, .7fr) minmax(260px, 1.3fr) auto; gap: 12px; align-items: end; border-bottom: 1px solid var(--separator); background: #f7f9fb; }
 .natural-layout strong { display: block; margin-top: 3px; font-size: 12px; }
 .natural-layout p { margin: 4px 0 0; color: var(--secondary); font-size: 9px; line-height: 1.5; }
@@ -548,7 +559,8 @@ input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent);
   .step { padding: 8px 3px; font-size: 9px; }
   .tab { min-width: 86px; padding: 0 10px; }
   .research-heading, .buyer-toolbar, .layout-guide { align-items: flex-start; flex-direction: column; }
-  .research-fields, .research-advanced-grid, .buyer-fields, .import-band, .natural-layout, .briefing-page-head, .briefing-buyers, .export-grid, .feature-switches, .model-row, .model-row.provider-row, .model-row.mode-row, .recipe-section { grid-template-columns: 1fr; }
+  .research-fields, .research-advanced-grid, .buyer-fields, .import-band, .generic-field-map, .natural-layout, .briefing-page-head, .briefing-buyers, .export-grid, .feature-switches, .model-row, .model-row.provider-row, .mode-row, .recipe-section { grid-template-columns: 1fr; }
+  .field-map-list { grid-template-columns: 1fr; }
   .research-fields .need-field, .research-action, .research-advanced-grid .wide, .buyer-field.products, .buyer-field.bio, .asset-state, .qualification, .natural-layout > button { grid-column: 1; }
   .toolbar-actions, .layout-guide-actions { width: 100%; }
   .toolbar-actions button, .layout-guide-actions button { flex: 1; }

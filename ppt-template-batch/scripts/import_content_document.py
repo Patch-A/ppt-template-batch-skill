@@ -12,7 +12,12 @@ from xml.etree import ElementTree
 
 
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-SUPPORTED_SUFFIXES = {".txt", ".md", ".csv", ".json", ".docx"}
+XLSX_NS = {
+    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "package_rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
+SUPPORTED_SUFFIXES = {".txt", ".md", ".csv", ".json", ".docx", ".xlsx"}
 
 
 def read_text(path: Path) -> str:
@@ -48,10 +53,76 @@ def read_docx(path: Path) -> str:
     return "\n".join(blocks)
 
 
+def spreadsheet_column_index(reference: str) -> int:
+    letters = re.match(r"[A-Z]+", reference or "")
+    if not letters:
+        return 0
+    value = 0
+    for char in letters.group(0):
+        value = value * 26 + ord(char) - ord("A") + 1
+    return value - 1
+
+
+def read_xlsx(path: Path) -> list[dict[str, str]]:
+    with zipfile.ZipFile(path) as archive:
+        workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        first_sheet = workbook.find("main:sheets/main:sheet", XLSX_NS)
+        if first_sheet is None:
+            return []
+        relationship_id = first_sheet.get(f"{{{XLSX_NS['rel']}}}id")
+        relationships = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        target = next(
+            (
+                item.get("Target", "")
+                for item in relationships.findall("package_rel:Relationship", XLSX_NS)
+                if item.get("Id") == relationship_id
+            ),
+            "",
+        )
+        sheet_path = "xl/" + target.lstrip("/")
+        if target.startswith("/"):
+            sheet_path = target.lstrip("/")
+
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared_strings = [
+                "".join(node.text or "" for node in item.findall(".//main:t", XLSX_NS))
+                for item in shared_root.findall("main:si", XLSX_NS)
+            ]
+        sheet = ElementTree.fromstring(archive.read(sheet_path))
+
+    rows: list[list[str]] = []
+    for row in sheet.findall(".//main:sheetData/main:row", XLSX_NS):
+        cells: dict[int, str] = {}
+        for cell in row.findall("main:c", XLSX_NS):
+            index = spreadsheet_column_index(cell.get("r", ""))
+            cell_type = cell.get("t", "")
+            value_node = cell.find("main:v", XLSX_NS)
+            value = value_node.text if value_node is not None else ""
+            if cell_type == "s" and value.isdigit():
+                value = shared_strings[int(value)] if int(value) < len(shared_strings) else ""
+            elif cell_type == "inlineStr":
+                value = "".join(node.text or "" for node in cell.findall(".//main:t", XLSX_NS))
+            cells[index] = str(value or "").strip()
+        if cells:
+            rows.append([cells.get(index, "") for index in range(max(cells) + 1)])
+    if not rows:
+        return []
+
+    headers = [clean_key(value) if value.strip() else f"column_{index + 1}" for index, value in enumerate(rows[0])]
+    records = []
+    for values in rows[1:]:
+        record = {header: values[index].strip() for index, header in enumerate(headers) if index < len(values) and values[index].strip()}
+        if record:
+            records.append(record)
+    return records
+
+
 def load_source(path: Path) -> tuple[str, Any | None]:
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
-        raise ValueError(f"不支持的资料格式：{suffix}。支持 TXT、Markdown、CSV、JSON、DOCX。")
+        raise ValueError(f"不支持的资料格式：{suffix}。支持 TXT、Markdown、CSV、JSON、DOCX、XLSX。")
     if suffix == ".json":
         payload = json.loads(read_text(path))
         return json.dumps(payload, ensure_ascii=False, indent=2), payload
@@ -61,6 +132,14 @@ def load_source(path: Path) -> tuple[str, Any | None]:
         return text, rows
     if suffix == ".docx":
         return read_docx(path), None
+    if suffix == ".xlsx":
+        rows = read_xlsx(path)
+        headers = list(rows[0].keys()) if rows else []
+        text = "\n".join(
+            ["\t".join(headers)]
+            + ["\t".join(record.get(header, "") for header in headers) for record in rows]
+        )
+        return text, rows
     return read_text(path), None
 
 
@@ -129,7 +208,7 @@ def normalize_payload(raw_text: str, parsed: Any | None, project_name: str, inst
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import TXT, Markdown, CSV, JSON, or DOCX into records.json.")
+    parser = argparse.ArgumentParser(description="Import TXT, Markdown, CSV, JSON, DOCX, or XLSX into records.json.")
     parser.add_argument("--input", required=True, help="Input document path")
     parser.add_argument("--output", required=True, help="Output records.json path")
     parser.add_argument("--project-name", default="PPT项目")

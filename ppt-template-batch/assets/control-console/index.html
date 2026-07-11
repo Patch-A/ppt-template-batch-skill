@@ -63,16 +63,22 @@
             <div class="import-copy">
               <span class="eyebrow">资料导入</span>
               <strong>粘贴或上传资料，自动识别并回填</strong>
-              <p>支持 TXT、Markdown、CSV、JSON、DOCX。预设买家模板会识别企业、国家、官网、采购产品和简介；通用版保留原文并生成可映射资料。</p>
+              <p>支持 TXT、Markdown、CSV、XLSX、JSON、DOCX。预设买家模板会识别企业、国家、官网、采购产品和简介；通用版保留原文并生成可映射资料。</p>
             </div>
             <label>整理要求<textarea id="import-instruction" placeholder="例如：每个产品一页，提取产品名、卖点、参数、应用场景；不要改写数字和专有名词。"></textarea></label>
             <div class="import-actions">
               <textarea id="import-text" placeholder="把企业资料、表格内容或文本直接粘贴到这里"></textarea>
               <button id="import-pasted-text" class="secondary-action" type="button">粘贴并识别</button>
-              <label class="upload-button"><input id="records-file" type="file" accept=".txt,.md,.csv,.json,.docx,text/plain,text/markdown,text/csv,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document">选择资料文件</label>
+              <label class="upload-button"><input id="records-file" type="file" accept=".txt,.md,.csv,.xlsx,.json,.docx,text/plain,text/markdown,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document">选择资料文件</label>
               <span id="import-status">尚未导入</span>
             </div>
           </div>
+
+          <section id="generic-field-map" class="generic-field-map hidden">
+            <div><span class="eyebrow">字段确认</span><strong>确认导入列名，再映射到模板</strong><p>保留原始数据值，只调整字段名。完成后可在“版式映射”中使用这些字段。</p></div>
+            <div id="field-map-list" class="field-map-list"></div>
+            <button id="apply-field-map" class="secondary-action" type="button">应用字段命名</button>
+          </section>
 
           <div id="buyer-data-view">
             <div class="research-band">

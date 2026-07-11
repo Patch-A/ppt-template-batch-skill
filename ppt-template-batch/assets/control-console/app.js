@@ -427,6 +427,58 @@ function renderRecipes(recipes) {
   });
 }
 
+function genericRecordFields() {
+  if (!state.current || state.current.project.mode !== "generic") return [];
+  const fields = [];
+  (currentRecords().records || []).forEach(function (record) {
+    Object.keys(record || {}).forEach(function (field) {
+      if (!fields.includes(field)) fields.push(field);
+    });
+  });
+  return fields;
+}
+
+function renderGenericFieldMap() {
+  const section = $("#generic-field-map");
+  if (!section) return;
+  const fields = genericRecordFields();
+  section.classList.toggle("hidden", !fields.length);
+  if (!fields.length) return;
+  $("#field-map-list").innerHTML = fields.map(function (field) {
+    return '<label class="field-map-row"><span title="' + escapeHtml(field) + '">' + escapeHtml(field) +
+      '</span><b>→</b><input data-source-field="' + escapeHtml(field) + '" value="' + escapeHtml(field) +
+      '" maxlength="80" aria-label="字段 ' + escapeHtml(field) + ' 的名称"></label>';
+  }).join("");
+}
+
+async function applyGenericFieldMap() {
+  if (!state.current || state.current.project.mode !== "generic") return;
+  const mapping = {};
+  $$("[data-source-field]").forEach(function (input) {
+    const source = input.dataset.sourceField;
+    const target = input.value.trim();
+    if (source && target && source !== target) mapping[source] = target;
+  });
+  if (!Object.keys(mapping).length) {
+    showToast("字段名称未变化");
+    return;
+  }
+  try {
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/field-map", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mapping: mapping})
+    });
+    state.current.records = normalizeRecords(result.records);
+    $("#records-editor").value = pretty(state.current.records);
+    renderGenericFieldMap();
+    refreshLayoutPreview(state.current.layout_config);
+    showToast("字段名称已更新");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
 async function refreshLayoutPreview(config) {
   if (!state.current || state.current.project.mode !== "generic") return;
   try {
@@ -667,7 +719,9 @@ function renderProject() {
   renderStructure(data.template);
   renderOutputs(data.outputs);
   $("#generic-layout-tools").classList.toggle("hidden", data.project.mode !== "generic");
+  $("#generic-field-map").classList.toggle("hidden", data.project.mode !== "generic");
   if (data.project.mode === "generic") {
+    renderGenericFieldMap();
     renderPagePicker(data.template);
     renderRecipes(data.project.layout_recipes || []);
     refreshLayoutPreview(data.layout_config);
@@ -774,8 +828,8 @@ async function uploadTemplate(file) {
 async function importRecordsFile(file) {
   if (!state.current || !file) return;
   const suffix = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
-  if (![".txt", ".md", ".csv", ".json", ".docx"].includes(suffix)) {
-    showToast("资料导入支持 TXT、Markdown、CSV、JSON、DOCX", true);
+  if (![".txt", ".md", ".csv", ".xlsx", ".json", ".docx"].includes(suffix)) {
+    showToast("资料导入支持 TXT、Markdown、CSV、XLSX、JSON、DOCX", true);
     return;
   }
   try {
@@ -789,6 +843,7 @@ async function importRecordsFile(file) {
     state.current.records = state.current.project.mode === "buyer_briefing" ? normalizeBriefing(result.records) : normalizeRecords(result.records);
     if (result.layout_config) state.current.layout_config = result.layout_config;
     $("#records-editor").value = pretty(state.current.records);
+    renderGenericFieldMap();
     $("#import-status").textContent = "已导入 " + result.source + "，生成 " + result.record_count + " 条记录";
     setDataView(state.current.project.mode === "buyer_board" ? "buyer" : (state.current.project.mode === "buyer_briefing" ? "briefing" : "json"), false);
     updateSteps();
@@ -1228,6 +1283,7 @@ $("#refresh-projects").addEventListener("click", function () {
 $("#template-file").addEventListener("change", function (event) { uploadTemplate(event.target.files[0]); });
 $("#records-file").addEventListener("change", function (event) { importRecordsFile(event.target.files[0]); });
 $("#import-pasted-text").addEventListener("click", function () { importPastedText().catch(function (error) { showToast(error.message, true); }); });
+$("#apply-field-map").addEventListener("click", applyGenericFieldMap);
 $("#save-records").addEventListener("click", function () { saveDocument("records"); });
 $("#save-layout").addEventListener("click", function () { saveDocument("layout"); });
 $("#generate-layout").addEventListener("click", generateLayoutFromInstruction);

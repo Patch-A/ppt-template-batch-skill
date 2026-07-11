@@ -45,10 +45,12 @@ When creating a project, choose one of the built-in presets:
 
 Recent usability upgrades:
 
+- Generic PPT projects can import TXT, Markdown, CSV, XLSX, JSON, or DOCX material, confirm imported field names, and convert it into `records.json`.
+- Layout mapping can start from a natural-language instruction in the console and then be checked against Template Structure element indexes.
+- Generic exports can use Microsoft Office, WPS Presentation, automatic detection, or compatibility mode.
+- Export preflight reports missing mapped fields, unresolved data placeholders, and unusually long values before PPTX generation.
 - Buyer research now builds a candidate pool and qualifies it by local presence, concrete demand scenarios, import or trade signals, public evidence, scores, confidence, and risks.
 - Buyer-board projects include advanced controls for preferred industries, excluded company types, import-evidence priority, candidate-pool size, and free-form custom requirements.
-- Generic PPT projects can import TXT, Markdown, CSV, JSON, or DOCX material and convert it into `records.json`.
-- Layout mapping can start from a natural-language instruction in the console and then be checked against Template Structure element indexes.
 
 
 ### Capability-based model settings
