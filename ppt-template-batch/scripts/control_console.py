@@ -21,6 +21,8 @@ from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
+from discover_buyer_profiles import normalize_products, pad_or_trim_bio
+
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 BUYER_FIELDS = (
@@ -220,6 +222,52 @@ def is_buyer_briefing_layout(config: Any) -> bool:
         and isinstance(config.get("slots"), list)
         and len(config.get("slots") or []) > 0
     )
+
+
+def has_buyer_image_slots(config: Any) -> bool:
+    if not isinstance(config, dict):
+        return False
+    slides = config.get("images", {}).get("slides", []) if isinstance(config.get("images"), dict) else []
+    return any(isinstance(slot, dict) and (slot.get("logo") or slot.get("site")) for slot in slides)
+
+
+def default_research_strategy(procurement_need: str) -> dict[str, Any]:
+    need = procurement_need.strip().lower()
+    defaults: dict[str, Any] = {
+        "preferred_industries": "当地制造企业、工程项目承包商、设备维护服务商、进口商和区域经销商",
+        "excluded_company_types": "仅销售同类产品且无进口、代理或自用场景的直接竞争制造商；无当地实体或无官网企业",
+        "custom_requirements": "企业需在目标国家有工厂、项目、服务网点或明确经销业务；优先有进口、代理、跨境采购或持续使用需求的公开证据。",
+        "prefer_import_evidence": True,
+        "candidate_multiplier": 3,
+    }
+    if any(word in need for word in ("电机", "马达", "motor")):
+        defaults.update({
+            "preferred_industries": "食品机械、包装机械、泵阀、风机、输送设备、暖通设备、矿山设备、物流仓储、工业自动化、工程承包和设备维护",
+            "excluded_company_types": "纯电机、发电机或减速电机制造商；仅销售电机且无进口代理或自用场景的品牌商；无当地实体企业",
+            "custom_requirements": "优先选择生产线、设备或项目必然使用电机的当地企业，以及进口商、代理商和维修服务商；必须说明电机的具体使用环节，并优先有进口或持续采购证据。",
+        })
+    elif any(word in need for word in ("五轴", "数控", "cnc", "机床", "加工中心")):
+        defaults.update({
+            "preferred_industries": "航空航天零部件、汽车零部件、模具制造、医疗器械加工、精密机械、能源设备零部件、合同制造和CNC加工服务商",
+            "excluded_company_types": "五轴数控机床制造商、纯机床品牌商；无本地工厂、加工服务或经销网点的海外企业",
+            "custom_requirements": "企业必须在当地有工厂、机加工服务、维修网点或进口代理业务；优先有复杂零件加工、模具加工、五轴加工能力或进口机床代理的公开证据。",
+        })
+    return defaults
+
+
+def merge_research_strategy(procurement_need: str, supplied: dict[str, Any] | None) -> dict[str, Any]:
+    merged = default_research_strategy(procurement_need)
+    for key, value in (supplied or {}).items():
+        if key in {"preferred_industries", "excluded_company_types", "custom_requirements"} and str(value or "").strip():
+            merged[key] = str(value).strip()
+        elif key == "prefer_import_evidence":
+            merged[key] = bool(value)
+        elif key == "candidate_multiplier":
+            try:
+                merged[key] = max(2, min(5, int(value)))
+            except (TypeError, ValueError):
+                pass
+    return merged
 
 
 def _u(value: str) -> str:
@@ -721,7 +769,13 @@ class ConsoleState:
                 }]
             else:
                 config["slides"] = []
-            repeat_slide = slides[1] if len(slides) > 1 else slides[0]
+            try:
+                source_slide_index = int(payload.get("source_slide_index") or 0)
+            except (TypeError, ValueError):
+                source_slide_index = 0
+            if source_slide_index < 1 or source_slide_index > len(slides):
+                source_slide_index = 2 if len(slides) > 1 else 1
+            repeat_slide = slides[source_slide_index - 1]
             text_shapes = [
                 shape for shape in repeat_slide.get("shapes", [])
                 if shape.get("has_text_frame") and not shape.get("has_table")
@@ -754,7 +808,7 @@ class ConsoleState:
             config["slides"] = []
         write_json(paths["layout"], config)
         self.touch(paths, {"layout_instruction": instruction, "mode": project.get("mode", "generic")})
-        return {"layout_config": config, "field_candidates": fields}
+        return {"layout_config": config, "field_candidates": fields, "source_slide_index": repeat_slide["index"] if inspection.get("slides") else 0}
 
     def prepare_buyer_layout(self, paths: dict[str, Path], country: str, procurement_need: str) -> dict[str, Any]:
         if not paths["template"].is_file():
@@ -769,6 +823,25 @@ class ConsoleState:
                 "cover_country": country_line,
                 "content_title": title,
             })
+            if not has_buyer_image_slots(current):
+                generated_path = paths["workspace"] / "buyer-layout-images.generated.json"
+                command = [
+                    sys.executable,
+                    str(skill_script("generate_layout_config.py")),
+                    "--template", str(paths["template"]),
+                    "--output", str(generated_path),
+                    "--cover-title", title,
+                    "--cover-country", country_line,
+                    "--content-title", title,
+                ]
+                returncode, stdout, stderr = run_command(command)
+                if returncode == 0 and generated_path.is_file():
+                    generated = read_json(generated_path)
+                    if has_buyer_image_slots(generated):
+                        current["images"] = generated["images"]
+                        current.setdefault("notes", []).append("Image insertion regions were generated from the buyer-board table layout.")
+                else:
+                    return {"ready": False, "warning": "图片区域自动识别失败，请重新上传模板后重试。", "details": stderr or stdout}
             write_json(paths["layout"], current)
             return {"ready": True, "generated": False, "layout_config": current}
 
@@ -790,7 +863,7 @@ class ConsoleState:
             }
         return {"ready": True, "generated": True, "layout_config": read_json(paths["layout"])}
 
-    def normalize_buyers(self, buyers: list[Any], default_country: str) -> tuple[list[dict[str, Any]], list[str]]:
+    def normalize_buyers(self, buyers: list[Any], default_country: str, procurement_need: str = "") -> tuple[list[dict[str, Any]], list[str]]:
         normalized = []
         warnings = []
         for index, raw in enumerate(buyers, start=1):
@@ -805,12 +878,15 @@ class ConsoleState:
                 except (TypeError, ValueError):
                     item[score_key] = 0
             item["country"] = item["country"] or default_country
+            if item["research_notes"] or item["buyer_type"]:
+                item["products"] = normalize_products(item["products"], procurement_need)
+                item["bio"] = pad_or_trim_bio(item["bio"])
             if not item["name"]:
                 warnings.append(f"第{index}家买家缺少企业名称。")
             chinese_count = sum(1 for char in item["bio"] if "\u4e00" <= char <= "\u9fff")
-            if item["bio"] and chinese_count < 120:
+            if item["bio"] and not 120 <= chinese_count <= 130:
                 label = item["name"] or f"第{index}家买家"
-                warnings.append(f"{label}简介目前为{chinese_count}个中文字符，建议补足120字。")
+                warnings.append(f"{label}简介目前为{chinese_count}个中文字符，建议调整到120-130字。")
             normalized.append(item)
         return normalized, warnings
 
@@ -821,7 +897,7 @@ class ConsoleState:
         raw_buyers = payload.get("buyers")
         if not isinstance(raw_buyers, list):
             raise ValueError("买家资料必须是列表。")
-        buyers, warnings = self.normalize_buyers(raw_buyers, country)
+        buyers, warnings = self.normalize_buyers(raw_buyers, country, procurement_need)
         current_data = read_json(paths["records"])
         globals_data = record_globals(current_data)
         project = read_json(paths["project"])
@@ -878,9 +954,7 @@ class ConsoleState:
         buyer_count = int(options.get("buyer_count", 10))
         if buyer_count < 1 or buyer_count > 30:
             raise ValueError("买家数量必须在1到30之间。")
-        strategy = dict(options.get("strategy") or {})
-        strategy.setdefault("prefer_import_evidence", True)
-        strategy["candidate_multiplier"] = max(2, min(5, int(strategy.get("candidate_multiplier", 3) or 3)))
+        strategy = merge_research_strategy(procurement_need, dict(options.get("strategy") or {}))
         job_id = uuid.uuid4().hex[:12]
         job = {
             "id": job_id,

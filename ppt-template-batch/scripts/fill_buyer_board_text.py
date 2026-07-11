@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,53 @@ def apply_override_color(shape_or_cell, rgb_hex: str) -> None:
             run.font.color.rgb = RGBColor.from_string(rgb_hex)
 
 
+def duplicate_slide(presentation: Presentation, source_index: int):
+    source_slide = presentation.slides[source_index]
+    new_slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    for shape in source_slide.shapes:
+        new_slide.shapes._spTree.insert_element_before(copy.deepcopy(shape.element), "p:extLst")
+    for rel in source_slide.part.rels.values():
+        if "notesSlide" in rel.reltype or rel.rId in new_slide.part.rels:
+            continue
+        try:
+            new_slide.part.rels.add_relationship(rel.reltype, rel._target, rel.rId)
+        except Exception:
+            pass
+    return new_slide
+
+
+def move_slide(presentation: Presentation, old_index: int, new_index: int) -> None:
+    slide_ids = presentation.slides._sldIdLst
+    slide_id = list(slide_ids)[old_index]
+    slide_ids.remove(slide_id)
+    slide_ids.insert(new_index, slide_id)
+
+
+def delete_slide(presentation: Presentation, slide_index: int) -> None:
+    slide_ids = presentation.slides._sldIdLst
+    slide_id = list(slide_ids)[slide_index]
+    rel_id = slide_id.rId
+    slide_ids.remove(slide_id)
+    presentation.part.drop_rel(rel_id)
+
+
+def resize_content_slides(presentation: Presentation, config: dict[str, Any], buyer_count: int) -> None:
+    content_config = config["content"]
+    start_index = int(content_config["start_slide_index"]) - 1
+    source_index = int(content_config.get("source_slide_index", content_config["start_slide_index"])) - 1
+    template_count = int(content_config.get("template_slide_count") or len(presentation.slides) - start_index)
+    if template_count < 1:
+        raise ValueError("Buyer-board template must contain at least one content slide.")
+
+    if buyer_count > template_count:
+        for offset in range(buyer_count - template_count):
+            duplicate_slide(presentation, source_index)
+            move_slide(presentation, len(presentation.slides) - 1, start_index + template_count + offset)
+    elif template_count > buyer_count:
+        for _ in range(template_count - buyer_count):
+            delete_slide(presentation, start_index + buyer_count)
+
+
 def fill_cover(presentation: Presentation, config: dict[str, Any], cover_title: str, cover_country: str) -> None:
     cover_config = config["cover"]
     slide = presentation.slides[cover_config["slide_index"] - 1]
@@ -134,6 +182,7 @@ def main() -> int:
     buyers = load_json(Path(args.buyers))
     config = load_json(Path(args.layout_config))
     presentation = Presentation(args.template)
+    resize_content_slides(presentation, config, len(buyers))
 
     defaults = config.get("defaults", {})
     cover_title = args.cover_title or defaults.get("cover_title", "")

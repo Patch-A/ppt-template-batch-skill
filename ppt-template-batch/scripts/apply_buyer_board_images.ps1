@@ -176,9 +176,41 @@ function Add-LogoPicture {
         throw "Missing image asset: $ImagePath"
     }
 
-    $preparedImagePath = Prepare-ImageAsset -ImagePath $ImagePath -Kind "logo" -TargetWidth $Width -TargetHeight $Height
+    $isSvg = [IO.Path]::GetExtension($ImagePath).ToLowerInvariant() -eq ".svg"
+    $preparedImagePath = $ImagePath
+    if (-not $isSvg) {
+        $preparedImagePath = Prepare-ImageAsset -ImagePath $ImagePath -Kind "logo" -TargetWidth $Width -TargetHeight $Height
+    }
+
+    if ($isSvg) {
+        $svgText = Get-Content -LiteralPath $ImagePath -Raw -ErrorAction SilentlyContinue
+        if ($svgText -match '(?i)(fill\s*=\s*["''](?:#f(?:dfefe|fff(?:fff)?)|white)["'']|stroke\s*=\s*["''](?:#f(?:dfefe|fff(?:fff)?)|white)["''])') {
+            $backdrop = $Slide.Shapes.AddShape(1, $Left - 4, $Top - 3, $Width + 8, $Height + 6)
+            $backdrop.Fill.ForeColor.RGB = 0xF4492A
+            $backdrop.Line.Visible = 0
+        }
+    }
     $shape = $Slide.Shapes.AddPicture($preparedImagePath, $false, $true, $Left, $Top, -1, -1)
     Fit-PictureIntoBox -Shape $shape -BoxLeft $Left -BoxTop $Top -BoxWidth $Width -BoxHeight $Height
+}
+
+function Add-SitePicture {
+    param(
+        $Slide,
+        [string]$ImagePath,
+        [double]$Left,
+        [double]$Top,
+        [double]$Width,
+        [double]$Height
+    )
+
+    if (-not (Test-Path -LiteralPath $ImagePath)) {
+        throw "Missing image asset: $ImagePath"
+    }
+
+    $preparedImagePath = Prepare-ImageAsset -ImagePath $ImagePath -Kind "site" -TargetWidth $Width -TargetHeight $Height
+    $shape = $Slide.Shapes.AddPicture($preparedImagePath, $false, $true, $Left, $Top, -1, -1)
+    Fill-PictureIntoBox -Shape $shape -BoxLeft $Left -BoxTop $Top -BoxWidth $Width -BoxHeight $Height
 }
 
 function Remove-HeaderArtifacts {
@@ -239,26 +271,32 @@ try {
         $buyer = $buyers[$index]
         $slot = $slideAssets[$index]
         if ($null -eq $slot) {
+            $slot = $slideAssets[0]
+        }
+        if ($null -eq $slot) {
             continue
         }
 
         $slide = $presentation.Slides.Item($startSlideIndex + $index)
 
         if ($null -ne $slot.site -and -not [string]::IsNullOrWhiteSpace([string]$buyer.site_image_path)) {
-            $siteTarget = Get-ShapeAtPosition -Slide $slide -Left ([double]$slot.site.target_left) -Top ([double]$slot.site.target_top) -AllowedTypes @(13)
             $fillBox = $false
             if ($null -ne $slot.site.fill) {
                 $fillBox = [bool]$slot.site.fill
             }
-            Replace-PictureShape -Slide $slide -Target $siteTarget -ImagePath $buyer.site_image_path -FillBox $fillBox
+            if ([string]$slot.site.mode -eq "add") {
+                Add-SitePicture -Slide $slide -ImagePath $buyer.site_image_path -Left ([double]$slot.site.left) -Top ([double]$slot.site.top) -Width ([double]$slot.site.width) -Height ([double]$slot.site.height)
+            }
+            else {
+                $siteTarget = Get-ShapeAtPosition -Slide $slide -Left ([double]$slot.site.target_left) -Top ([double]$slot.site.target_top) -AllowedTypes @(13)
+                Replace-PictureShape -Slide $slide -Target $siteTarget -ImagePath $buyer.site_image_path -FillBox $fillBox
+            }
         }
-        elseif ($null -ne $slot.site) {
+        elseif ($null -ne $slot.site -and [string]$slot.site.mode -ne "add") {
             Remove-PictureTarget -Slide $slide -Left ([double]$slot.site.target_left) -Top ([double]$slot.site.target_top)
         }
 
-        if ($null -eq $slot.logo) {
-            continue
-        }
+        if ($null -eq $slot.logo) { continue }
 
         if ([string]::IsNullOrWhiteSpace([string]$buyer.logo_path)) {
             if ($slot.logo.mode -eq "replace") {

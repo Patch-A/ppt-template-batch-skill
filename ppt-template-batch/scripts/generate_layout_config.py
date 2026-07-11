@@ -104,7 +104,7 @@ def choose_footer_shape(slide, title_shape_index: int) -> int | None:
     return candidates[0][0]
 
 
-def detect_image_slots(slide) -> dict[str, Any]:
+def detect_image_slots(slide, table_shape=None, slide_width: int | None = None, slide_height: int | None = None) -> dict[str, Any]:
     pictures = []
     for index, shape in enumerate(slide.shapes, start=1):
         if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
@@ -158,6 +158,37 @@ def detect_image_slots(slide) -> dict[str, Any]:
             "fill": True,
         }
 
+    # Many manually designed buyer boards leave image regions blank instead of
+    # inserting picture placeholders. Derive stable insertion boxes from the
+    # table bounds so those templates can still receive fetched assets.
+    if table_shape is not None and (logo is None or site is None):
+        table_left = table_shape.left
+        table_top = table_shape.top
+        table_right = table_shape.left + table_shape.width
+        table_bottom = table_shape.top + table_shape.height
+        if logo is None and table_top > 100 * EMU_PER_PIXEL:
+            logo = {
+                "mode": "add",
+                "left": emu_to_px(table_left),
+                "top": emu_to_px(max(table_top - 55 * EMU_PER_PIXEL, 0)),
+                "width": 150.0,
+                "height": 34.0,
+            }
+        if site is None and slide_width and slide_height and table_right < slide_width - 240 * EMU_PER_PIXEL:
+            site_left = table_right + 45 * EMU_PER_PIXEL
+            site_top = max(table_top - 32 * EMU_PER_PIXEL, 0)
+            site_right = slide_width - 36 * EMU_PER_PIXEL
+            site_bottom = min(table_bottom - 25 * EMU_PER_PIXEL, slide_height - 80 * EMU_PER_PIXEL)
+            if site_right > site_left and site_bottom > site_top:
+                site = {
+                    "mode": "add",
+                    "left": emu_to_px(site_left),
+                    "top": emu_to_px(site_top),
+                    "width": emu_to_px(site_right - site_left),
+                    "height": emu_to_px(site_bottom - site_top),
+                    "fill": True,
+                }
+
     return {"logo": logo, "site": site}
 
 
@@ -193,16 +224,18 @@ def build_content_config(presentation: Presentation) -> tuple[dict[str, Any], li
         )
 
     image_slots = []
-    for slide_index, slide, _ in content_slides:
+    for slide_index, slide, table in content_slides:
         image_slots.append(
             {
                 "slide_offset": slide_index - first_slide_index,
-                **detect_image_slots(slide),
+                **detect_image_slots(slide, table, presentation.slide_width, presentation.slide_height),
             }
         )
 
     content = {
+        "source_slide_index": first_slide_index,
         "start_slide_index": first_slide_index,
+        "template_slide_count": len(content_slides),
         "title_shape_index": title_shape_index,
         "table_shape_index": table_shape_index,
         "fields": fields,

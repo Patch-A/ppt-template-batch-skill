@@ -85,6 +85,16 @@ def add_logo(slide, image_path: Path, logo_cfg: dict[str, float]) -> None:
     fit_into_box(new_shape, left, top, width, height, align_left=True)
 
 
+def add_site(slide, image_path: Path, site_cfg: dict[str, float], temp_dir: Path) -> None:
+    left = Pt(site_cfg["left"])
+    top = Pt(site_cfg["top"])
+    width = Pt(site_cfg["width"])
+    height = Pt(site_cfg["height"])
+    prepared = prepare_site_image(image_path, temp_dir, int(width), int(height))
+    new_shape = slide.shapes.add_picture(str(prepared.output_path), left, top)
+    fit_into_box(new_shape, left, top, width, height)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fallback image application without PowerPoint COM.")
     parser.add_argument("--input-ppt", required=True)
@@ -105,11 +115,13 @@ def main() -> int:
 
     for idx, buyer in enumerate(buyers):
         slide = prs.slides[start_index + idx]
-        slot = slots.get(idx)
+        slot = slots.get(idx) or slots.get(0)
         if not slot:
             continue
 
-        if slot.get("site") and buyer.get("site_image_path"):
+        if slot.get("site") and buyer.get("site_image_path") and slot["site"].get("mode") == "add":
+            add_site(slide, Path(buyer["site_image_path"]), slot["site"], temp_dir)
+        elif slot.get("site") and buyer.get("site_image_path"):
             site_cfg = slot["site"]
             target = find_shape(slide, float(site_cfg["target_left"]), float(site_cfg["target_top"]))
             prepared = prepare_site_image(
@@ -119,7 +131,7 @@ def main() -> int:
                 int(target.height),
             )
             replace_picture(slide, target, prepared.output_path, True)
-        elif slot.get("site"):
+        elif slot.get("site") and slot["site"].get("mode") != "add":
             clear_picture_target(slide, float(slot["site"]["target_left"]), float(slot["site"]["target_top"]))
 
         if slot.get("logo") and buyer.get("logo_path"):

@@ -105,7 +105,7 @@
             </div>
 
             <div class="buyer-toolbar">
-              <div><strong>买家信息</strong><span>企业名称、官网、采购产品和120字企业简介</span></div>
+              <div><strong>买家信息</strong><span>企业名称、官网、具体采购产品和120-130字完整企业简介</span></div>
               <div class="toolbar-actions">
                 <button id="add-buyer" class="secondary-action" type="button">添加买家</button>
                 <button id="save-buyers" type="button">保存买家资料</button>
@@ -132,6 +132,7 @@
               <p>系统会结合已导入字段和模板结构生成起步映射。首次使用新模板仍需检查元素编号。</p>
             </div>
             <textarea id="layout-instruction" placeholder="例如：第1页放项目标题；第2页作为重复页，每条记录一页，顶部放产品名，中部放卖点和参数，右侧图片框放 image_path。"></textarea>
+            <label class="layout-source">选择批量页<input id="layout-source-slide" type="number" min="1" value="2"><span>选中模板中的一页，按原格式复制后批量填充。</span></label>
             <button id="generate-layout" type="button">生成起步映射</button>
           </div>
           <textarea id="layout-editor" class="json-editor" spellcheck="false" aria-label="layout-config.json 编辑器"></textarea>

@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -198,6 +199,15 @@ def copy_assets_to_workspace(buyers_path: Path, workspace_dir: Path) -> Path:
     return copied_buyers
 
 
+def copy_previews(source_dir: Path, destination_dir: Path) -> None:
+    if not source_dir.is_dir():
+        return
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    for item in source_dir.iterdir():
+        if item.is_file():
+            shutil.copy2(item, destination_dir / item.name)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the buyer-board PPT pipeline end-to-end.")
     parser.add_argument("--template", required=True, help="Template PPTX path")
@@ -273,9 +283,19 @@ def main() -> int:
             args.asset_mode,
             args.browser_timeout_ms,
         )
-    layout_config = ensure_layout_config(args, skill_root, workspace)
-    text_draft = workspace / "text-draft.pptx"
-    copied_buyers = copy_assets_to_workspace(buyers_path, workspace)
+    layout_config = Path(ensure_layout_config(args, skill_root, workspace))
+    # PowerPoint COM is unreliable with Chinese or non-ASCII paths. Stage the
+    # final image pass under the Windows temp directory and copy its results
+    # back to the project only after PowerPoint closes the file.
+    stage_dir = Path(tempfile.mkdtemp(prefix="ppt-buyer-board-"))
+    staged_template = stage_dir / "template.pptx"
+    staged_layout = stage_dir / "layout-config.json"
+    text_draft = stage_dir / "text-draft.pptx"
+    staged_output = stage_dir / "finished.pptx"
+    staged_previews = stage_dir / "previews"
+    shutil.copy2(args.template, staged_template)
+    shutil.copy2(layout_config, staged_layout)
+    copied_buyers = copy_assets_to_workspace(buyers_path, stage_dir)
 
     country_label = default_cover_country(args)
     content_title = default_content_title(args)
@@ -283,9 +303,9 @@ def main() -> int:
     text_cmd = [
         sys.executable,
         str(skill_root / "scripts" / "fill_buyer_board_text.py"),
-        args.template,
+        str(staged_template),
         str(copied_buyers),
-        layout_config,
+        str(staged_layout),
         str(text_draft),
     ]
     if args.cover_title:
@@ -296,49 +316,55 @@ def main() -> int:
         text_cmd.extend(["--content-title", content_title])
     run(text_cmd)
 
-    image_cmd = [
-        "powershell",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(skill_root / "scripts" / "apply_buyer_board_images.ps1"),
-        "-InputPpt",
-        str(text_draft),
-        "-BuyersJson",
-        str(copied_buyers),
-        "-LayoutConfigJson",
-        layout_config,
-        "-OutputPpt",
-        args.output,
-        "-PreviewDir",
-        args.preview_dir,
-    ]
     try:
-        run(image_cmd)
-    except RuntimeError as exc:
-        message = str(exc)
-        if "REGDB_E_CLASSNOTREG" not in message and "NoCOMClassIdentified" not in message:
-            raise
-        run(
-            [
-                sys.executable,
-                str(skill_root / "scripts" / "apply_buyer_board_images_fallback.py"),
-                "--input-ppt",
-                str(text_draft),
-                "--buyers-json",
-                str(copied_buyers),
-                "--layout-config",
-                layout_config,
-                "--output-ppt",
-                args.output,
-                "--preview-dir",
-                args.preview_dir,
-            ]
-        )
+        image_cmd = [
+            "powershell",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(skill_root / "scripts" / "apply_buyer_board_images.ps1"),
+            "-InputPpt",
+            str(text_draft),
+            "-BuyersJson",
+            str(copied_buyers),
+            "-LayoutConfigJson",
+            str(staged_layout),
+            "-OutputPpt",
+            str(staged_output),
+            "-PreviewDir",
+            str(staged_previews),
+        ]
+        try:
+            run(image_cmd)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "REGDB_E_CLASSNOTREG" not in message and "NoCOMClassIdentified" not in message:
+                raise
+            run(
+                [
+                    sys.executable,
+                    str(skill_root / "scripts" / "apply_buyer_board_images_fallback.py"),
+                    "--input-ppt",
+                    str(text_draft),
+                    "--buyers-json",
+                    str(copied_buyers),
+                    "--layout-config",
+                    str(staged_layout),
+                    "--output-ppt",
+                    str(staged_output),
+                    "--preview-dir",
+                    str(staged_previews),
+                ]
+            )
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staged_output, output_path)
+        copy_previews(staged_previews, Path(args.preview_dir))
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
     print(args.output)
     print(args.preview_dir)
-    print(copied_buyers)
     print(layout_config)
     report_path = workspace / "asset_fetch_report.json"
     if report_path.exists():

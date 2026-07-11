@@ -153,31 +153,52 @@ def pad_or_trim_bio(text: str) -> str:
     raw = re.sub(r"\s+", "", text or "")
     allowed_punctuation = "\uff0c\u3002\u3001\uff1b\uff1a"
     chars = [ch for ch in raw if "\u4e00" <= ch <= "\u9fff" or ch in allowed_punctuation]
-    trimmed = "".join(chars)
-    count = chinese_char_count(trimmed)
-    if count == 120:
-        return trimmed
-    if count > 120:
-        output = []
-        total = 0
-        for ch in trimmed:
-            output.append(ch)
-            if "\u4e00" <= ch <= "\u9fff":
-                total += 1
-                if total >= 120:
+    result = "".join(chars).strip(allowed_punctuation)
+
+    # A fixed-length response may already have been cut in the middle of a
+    # clause. Keep only complete sentences before adding the required padding.
+    if result and result[-1] not in "\u3002\uff1b":
+        last_sentence_end = max(result.rfind("\u3002"), result.rfind("\uff1b"))
+        if last_sentence_end >= 0:
+            result = result[:last_sentence_end + 1]
+
+    # Keep a complete sentence in the 120-130-character window. The previous
+    # implementation cut at character 120, which created visibly broken copy.
+    if chinese_char_count(result) > 130:
+        sentence_ends = [index for index, ch in enumerate(result) if ch in "\u3002\uff1b"]
+        usable = [index for index in sentence_ends if 112 <= chinese_char_count(result[:index + 1]) <= 130]
+        if usable:
+            result = result[:usable[-1] + 1]
+        else:
+            output: list[str] = []
+            for ch in result:
+                output.append(ch)
+                if chinese_char_count("".join(output)) >= 126:
                     break
-        result = "".join(output).rstrip(allowed_punctuation)
-        while chinese_char_count(result) < 120:
-            result += "\u3002"
-        return result
-    filler = "\u8be5\u4f01\u4e1a\u5728\u5f53\u5730\u884c\u4e1a\u5177\u5907\u7a33\u5b9a\u91c7\u8d2d\u80fd\u529b\u4e0e\u660e\u786e\u5408\u4f5c\u9700\u6c42\u3002"
-    result = trimmed
+            result = "".join(output).rstrip(allowed_punctuation)
+
+    if result and result[-1] not in "\u3002\uff1b":
+        result += "\u3002"
+
+    fillers = ("该企业重视设备精度、交付效率和长期售后支持。", "采购计划稳定，合作需求明确。", "具备持续采购能力。")
+    filler_index = 0
     while chinese_char_count(result) < 120:
-        for ch in filler:
-            result += ch
-            if chinese_char_count(result) >= 120:
-                break
-    return pad_or_trim_bio(result)
+        filler = fillers[filler_index % len(fillers)]
+        filler_index += 1
+        if chinese_char_count(result + filler) <= 130:
+            result += filler
+        else:
+            result += "采购稳定。"
+
+    return result
+
+
+def normalize_products(value: str, procurement_need: str) -> str:
+    product = re.sub(r"\s+", "", value or "")
+    product = re.sub(r"^(?:采购产品|采购品类|采购需求)[:：]", "", product)
+    product = re.split(r"(?:用于|用以|适用于|主要用于|以满足|进行加工|加工)", product, maxsplit=1)[0]
+    product = product.strip("，、；。:：")
+    return product or re.sub(r"\s+", "", procurement_need).strip("，、；。:：")
 
 
 def build_strategy_text(strategy: dict[str, Any] | None) -> str:
@@ -241,7 +262,7 @@ Selection rules:
 - For capital equipment such as CNC machines, laser machines, packaging equipment, textile machinery, food-processing equipment, or machine tools, prioritize factories and service providers that use the equipment to make their own products or provide contract manufacturing. Also consider local importers, distributors, machine-tool dealers, industrial equipment integrators, maintenance/service companies, technical training centers, and large industrial groups with machining workshops.
 - Do not list a manufacturer only because it is in the same industry. A manufacturer is valid only when it likely purchases the requested product as production equipment, process equipment, components, consumables, spare parts, or resale inventory.
 - Exclude or downgrade direct competing OEMs whose main business is making and selling the same requested product, unless public business fit suggests importing/distribution or internal use.
-- The products field must describe what the company would buy, not what it sells.
+- The products field must be one to three concrete product names separated by Chinese commas, such as "五轴联动加工中心、五轴精密铣削中心". Never include verbs, "用于", processing scenarios, or a full sentence in this field.
 - demand_scenarios must explain exactly where and why the requested product is needed.
 - import_signal must summarize public import/distribution/foreign-sourcing evidence, or be empty when no evidence is available.
 - evidence must summarize the strongest qualification evidence.
@@ -256,8 +277,8 @@ Return JSON in this exact structure:
       "name": "Company legal or common full name",
       "country": "{country}",
       "website": "official-domain.example",
-      "products": "Specific procurement products in Chinese",
-      "bio": "Exactly 120 Chinese ideographs in Simplified Chinese",
+      "products": "One to three concrete procurement product names in Chinese only",
+      "bio": "A complete 120-130 Chinese-character Simplified Chinese company introduction, ending with a full sentence",
       "logo_path": "",
       "site_image_path": "",
       "research_notes": "Buyer type, procurement rationale, and caveats",
@@ -516,6 +537,7 @@ def fetch_buyers(
         "research_mode": resolved_mode,
         "candidate_count": len(candidates),
         "shortlist_count": len(buyers),
+        "procurement_need": procurement_need,
         "strategy": strategy or {},
     }
 
@@ -541,7 +563,7 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
                 "name": (item.get("name") or "").strip(),
                 "country": country,
                 "website": normalize_website(item.get("website", "")),
-                "products": re.sub(r"\s+", "", item.get("products", "")).strip("\uff0c\u3001"),
+                "products": normalize_products(item.get("products", ""), str(research_meta.get("procurement_need", ""))),
                 "bio": pad_or_trim_bio(item.get("bio", "")),
                 "logo_path": "",
                 "site_image_path": "",

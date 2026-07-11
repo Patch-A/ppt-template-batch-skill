@@ -80,6 +80,39 @@ function chineseCount(value) {
   return matches ? matches.length : 0;
 }
 
+function researchStrategyDefaults(need) {
+  const value = String(need || "").toLowerCase();
+  const generic = {
+    preferred_industries: "当地制造企业、工程项目承包商、设备维护服务商、进口商和区域经销商",
+    excluded_company_types: "仅销售同类产品且无进口、代理或自用场景的直接竞争制造商；无当地实体或无官网企业",
+    custom_requirements: "企业需在目标国家有工厂、项目、服务网点或明确经销业务；优先有进口、代理、跨境采购或持续使用需求的公开证据。"
+  };
+  if (/电机|马达|motor/.test(value)) return {
+    preferred_industries: "食品机械、包装机械、泵阀、风机、输送设备、暖通设备、矿山设备、物流仓储、工业自动化、工程承包和设备维护",
+    excluded_company_types: "纯电机、发电机或减速电机制造商；仅销售电机且无进口代理或自用场景的品牌商；无当地实体企业",
+    custom_requirements: "优先选择生产线、设备或项目必然使用电机的当地企业，以及进口商、代理商和维修服务商；必须说明电机的具体使用环节，并优先有进口或持续采购证据。"
+  };
+  if (/五轴|数控|cnc|机床|加工中心/.test(value)) return {
+    preferred_industries: "航空航天零部件、汽车零部件、模具制造、医疗器械加工、精密机械、能源设备零部件、合同制造和CNC加工服务商",
+    excluded_company_types: "五轴数控机床制造商、纯机床品牌商；无本地工厂、加工服务或经销网点的海外企业",
+    custom_requirements: "企业必须在当地有工厂、机加工服务、维修网点或进口代理业务；优先有复杂零件加工、模具加工、五轴加工能力或进口机床代理的公开证据。"
+  };
+  return generic;
+}
+
+function applyResearchDefaults() {
+  const defaults = researchStrategyDefaults($("#research-need").value.trim());
+  ["preferred-industries", "excluded-company-types", "custom-requirements"].forEach(function (id) {
+    const input = $("#" + id);
+    const key = id.replaceAll("-", "_");
+    const previous = input.dataset.autoDefault || "";
+    if (!input.value.trim() || input.value.trim() === previous) {
+      input.value = defaults[key];
+      input.dataset.autoDefault = defaults[key];
+    }
+  });
+}
+
 function blankBuyer(country) {
   return {
     name: "", country: country || "", website: "", products: "", bio: "",
@@ -369,9 +402,9 @@ function buyerEntryHtml(buyer, index) {
     escapeHtml(buyer.website) + '" placeholder="www.example.com"></label></div>' +
     '<div class="buyer-field products"><label>采购产品<input data-buyer-index="' + index + '" data-field="products" value="' +
     escapeHtml(buyer.products) + '" placeholder="用中文顿号分隔具体采购产品"></label></div>' +
-    '<div class="buyer-field bio"><label>企业简介<textarea data-buyer-index="' + index + '" data-field="bio" placeholder="填写约120个中文字符的企业介绍">' +
-    escapeHtml(buyer.bio) + '</textarea></label><div class="field-meta ' + (count >= 120 ? "good" : "") +
-    '" data-bio-count="' + index + '">' + count + ' / 120 个中文字符</div></div>' +
+    '<div class="buyer-field bio"><label>企业简介<textarea data-buyer-index="' + index + '" data-field="bio" placeholder="填写120-130个中文字符的完整企业介绍">' +
+    escapeHtml(buyer.bio) + '</textarea></label><div class="field-meta ' + (count >= 120 && count <= 130 ? "good" : "") +
+    '" data-bio-count="' + index + '">' + count + ' / 120-130 个中文字符</div></div>' +
     '<div class="asset-state">' + logoState + siteState + '</div>' + qualification + '</div></article>';
 }
 
@@ -388,6 +421,11 @@ function renderBuyerForm() {
   $("#custom-requirements").value = strategy.custom_requirements || "";
   $("#prefer-import-evidence").checked = strategy.prefer_import_evidence !== false;
   $("#candidate-multiplier").value = strategy.candidate_multiplier || 3;
+  const defaults = researchStrategyDefaults($("#research-need").value.trim());
+  [["#preferred-industries", "preferred_industries"], ["#excluded-company-types", "excluded_company_types"], ["#custom-requirements", "custom_requirements"]].forEach(function (item) {
+    if ($(item[0]).value.trim() === defaults[item[1]]) $(item[0]).dataset.autoDefault = defaults[item[1]];
+  });
+  applyResearchDefaults();
   $("#records-summary").textContent = data.records.length + " 家买家";
   const list = $("#buyer-list");
   if (!data.records.length) {
@@ -403,8 +441,8 @@ function renderBuyerForm() {
       if (field === "bio") {
         const count = chineseCount(input.value);
         const meta = $('[data-bio-count="' + index + '"]');
-        meta.textContent = count + " / 120 个中文字符";
-        meta.classList.toggle("good", count >= 120);
+        meta.textContent = count + " / 120-130 个中文字符";
+        meta.classList.toggle("good", count >= 120 && count <= 130);
       }
       if (field === "name") {
         const heading = input.closest(".buyer-entry").querySelector(".buyer-entry-title strong");
@@ -490,6 +528,9 @@ function renderProject() {
   $("#records-editor").value = pretty(data.records);
   $("#layout-editor").value = pretty(data.layout_config);
   $("#layout-instruction").value = data.project.layout_instruction || "";
+  const sourceSlide = data.layout_config && data.layout_config.repeat && data.layout_config.repeat.source_slide_index;
+  $("#layout-source-slide").max = Math.max(1, Number(data.template.slide_count || 1));
+  $("#layout-source-slide").value = sourceSlide || Math.min(2, Math.max(1, Number(data.template.slide_count || 1)));
   $("#layout-summary").textContent = mappingCount(data.layout_config) ?
     (data.layout_config.cover ? "买家看板映射已就绪" : mappingCount(data.layout_config) + " 组页面映射") : "尚未配置映射";
   $("#output-filename").value = data.project.export && data.project.export.filename || "finished.pptx";
@@ -647,7 +688,7 @@ async function generateLayoutFromInstruction() {
     const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-from-instruction", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({instruction: instruction})
+      body: JSON.stringify({instruction: instruction, source_slide_index: Number($("#layout-source-slide").value || 0)})
     });
     state.current.layout_config = result.layout_config;
     state.current.project.layout_instruction = instruction;
@@ -1030,6 +1071,11 @@ $("#add-buyer").addEventListener("click", function () {
   updateSteps();
 });
 $("#run-research").addEventListener("click", runResearch);
+$("#research-need").addEventListener("change", applyResearchDefaults);
+$("#research-need").addEventListener("blur", applyResearchDefaults);
+["#preferred-industries", "#excluded-company-types", "#custom-requirements"].forEach(function (selector) {
+  $(selector).addEventListener("input", function () { this.dataset.autoDefault = ""; });
+});
 $("#run-export").addEventListener("click", runExport);
 $("#add-briefing-page").addEventListener("click", function () {
   currentBriefing().pages.push(blankBriefingPage());
