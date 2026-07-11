@@ -1,8 +1,19 @@
 # PPT Template Batch Skill
 
-General Codex skill for decomposing PowerPoint templates, mapping layout rules, filling structured data, replacing approved image slots, and batch-generating finished PPT decks.
+Local-first, generic PPT template automation for turning an approved PPTX into a repeatable batch-production workflow. It decomposes template structure, connects imported data to layout rules, preserves approved visual styles, and produces consistent presentation files at scale.
 
-This repository is focused on **generic PPT template automation**. Buyer-board and buyer-briefing workflows are bundled presets, not the limit of the skill.
+This repository is focused on **generic PPT template automation**. Use it for product catalogs, client proposals, company profiles, market reports, training materials, quote sheets, event lists, and any repeated PPT layout. Buyer Board and Buyer Briefing are optional bundled presets, not the limit of the skill.
+
+## Product Overview
+
+The workflow is designed for teams that already have a PPT template and need to reuse it safely:
+
+- Import TXT, Markdown, CSV, XLSX, JSON, or DOCX source material.
+- Confirm and rename imported fields before mapping them to a template.
+- Inspect slides, text boxes, tables, image placeholders, and repeated-page layouts.
+- Define mappings with structured JSON or natural-language instructions.
+- Batch-generate PPTX files through Microsoft Office, WPS Presentation, or compatibility mode.
+- Run preflight checks for missing mapped fields, unresolved placeholders, missing assets, and oversized content before export.
 
 ## What this repo contains
 

@@ -46,9 +46,9 @@ For buyer-briefing projects:
 
 1. Upload the PPTX template.
 2. Open Data Entry and use Buyer Briefing Form.
-3. Fill one category title per page, such as `????`, without adding the country name unless the template requires it.
+3. Fill one category title per page, such as `CNC Machine Buyers`, without adding the country name unless the template requires it.
 4. Fill exactly 6 buyers per page. Each buyer needs company name, compact company intro, and procurement category line.
-5. Keep procurement text as `?????XXXX?`.
+5. Keep procurement text in a compact format, such as `Procurement category: CNC machining centers`.
 6. Export PPTX. The console uses `fill_buyer_briefing_pages.py` and preserves the template run-level typography.
 
 
