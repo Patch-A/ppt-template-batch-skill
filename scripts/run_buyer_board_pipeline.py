@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pptx import Presentation
+
 
 def resolve_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -208,6 +210,57 @@ def copy_previews(source_dir: Path, destination_dir: Path) -> None:
             shutil.copy2(item, destination_dir / item.name)
 
 
+def expand_template_for_buyers(
+    skill_root: Path,
+    template_path: Path,
+    layout_path: Path,
+    buyer_count: int,
+    stage_dir: Path,
+) -> tuple[Path, Path]:
+    """Use PowerPoint COM to extend buyer pages without corrupting the PPTX."""
+    layout = load_json(layout_path)
+    content = layout.get("content") if isinstance(layout, dict) else None
+    if not isinstance(content, dict):
+        raise ValueError("Buyer-board layout config is missing its content section.")
+
+    start_slide_index = int(content["start_slide_index"])
+    source_slide_index = int(content.get("source_slide_index") or start_slide_index)
+    default_template_count = max(len(Presentation(template_path).slides) - start_slide_index + 1, 1)
+    template_slide_count = int(content.get("template_slide_count") or default_template_count)
+    copy_count = max(buyer_count - template_slide_count, 0)
+    if not copy_count:
+        return template_path, layout_path
+
+    expanded_template = stage_dir / "template-expanded.pptx"
+    run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(skill_root / "scripts" / "duplicate_ppt_slide.ps1"),
+            "-InputPpt",
+            str(template_path),
+            "-OutputPpt",
+            str(expanded_template),
+            "-SourceSlideIndex",
+            str(source_slide_index),
+            "-CopyCount",
+            str(copy_count),
+        ]
+    )
+    expanded_layout = json.loads(json.dumps(layout))
+    expanded_layout["content"]["template_slide_count"] = buyer_count
+    expanded_layout_path = stage_dir / "layout-config-expanded.json"
+    expanded_layout_path.write_text(
+        json.dumps(expanded_layout, ensure_ascii=False, indent=2),
+        encoding="utf-8-sig",
+    )
+    return expanded_template, expanded_layout_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the buyer-board PPT pipeline end-to-end.")
     parser.add_argument("--template", required=True, help="Template PPTX path")
@@ -300,23 +353,33 @@ def main() -> int:
     country_label = default_cover_country(args)
     content_title = default_content_title(args)
 
-    text_cmd = [
-        sys.executable,
-        str(skill_root / "scripts" / "fill_buyer_board_text.py"),
-        str(staged_template),
-        str(copied_buyers),
-        str(staged_layout),
-        str(text_draft),
-    ]
-    if args.cover_title:
-        text_cmd.extend(["--cover-title", args.cover_title])
-    if country_label:
-        text_cmd.extend(["--cover-country", country_label])
-    if content_title:
-        text_cmd.extend(["--content-title", content_title])
-    run(text_cmd)
-
     try:
+        buyers = load_json(copied_buyers)
+        if not isinstance(buyers, list):
+            raise ValueError("buyers.json must contain a list of buyer records.")
+        text_template, text_layout = expand_template_for_buyers(
+            skill_root,
+            staged_template,
+            staged_layout,
+            len(buyers),
+            stage_dir,
+        )
+        text_cmd = [
+            sys.executable,
+            str(skill_root / "scripts" / "fill_buyer_board_text.py"),
+            str(text_template),
+            str(copied_buyers),
+            str(text_layout),
+            str(text_draft),
+        ]
+        if args.cover_title:
+            text_cmd.extend(["--cover-title", args.cover_title])
+        if country_label:
+            text_cmd.extend(["--cover-country", country_label])
+        if content_title:
+            text_cmd.extend(["--content-title", content_title])
+        run(text_cmd)
+
         image_cmd = [
             "powershell",
             "-ExecutionPolicy",
@@ -328,7 +391,7 @@ def main() -> int:
             "-BuyersJson",
             str(copied_buyers),
             "-LayoutConfigJson",
-            str(staged_layout),
+            str(text_layout),
             "-OutputPpt",
             str(staged_output),
             "-PreviewDir",
@@ -349,7 +412,7 @@ def main() -> int:
                     "--buyers-json",
                     str(copied_buyers),
                     "--layout-config",
-                    str(staged_layout),
+                    str(text_layout),
                     "--output-ppt",
                     str(staged_output),
                     "--preview-dir",
@@ -360,6 +423,11 @@ def main() -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(staged_output, output_path)
         copy_previews(staged_previews, Path(args.preview_dir))
+    except Exception as exc:
+        write_failure_report(workspace, "ppt_generation", exc)
+        print(f"Buyer-board generation failed. See: {workspace / 'pipeline_failure.json'}", file=sys.stderr)
+        print(str(exc).split("STDERR:")[-1].strip() or str(exc), file=sys.stderr)
+        return 2
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
 
