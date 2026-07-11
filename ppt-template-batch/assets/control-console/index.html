@@ -129,13 +129,17 @@
             <div>
               <span class="eyebrow">自然语言映射</span>
               <strong>描述你希望资料怎样进入模板</strong>
-              <p>系统会结合已导入字段和模板结构生成起步映射。首次使用新模板仍需检查元素编号。</p>
+              <p>系统会结合已导入字段和模板结构生成映射，并在下方显示实际填充位置。</p>
             </div>
             <textarea id="layout-instruction" placeholder="例如：第1页放项目标题；第2页作为重复页，每条记录一页，顶部放产品名，中部放卖点和参数，右侧图片框放 image_path。"></textarea>
-            <label class="layout-source">选择批量页<input id="layout-source-slide" type="number" min="1" value="2"><span>选中模板中的一页，按原格式复制后批量填充。</span></label>
             <button id="generate-layout" type="button">生成起步映射</button>
           </div>
-          <textarea id="layout-editor" class="json-editor" spellcheck="false" aria-label="layout-config.json 编辑器"></textarea>
+          <div id="generic-layout-tools" class="generic-layout-tools hidden">
+            <section class="page-picker-section"><div><span class="eyebrow">批量页面</span><strong>选择要按原格式批量制作的模板页</strong><p>选中后，每条资料会复制这一页，并保持原字号、颜色和元素位置。</p></div><div id="page-picker" class="page-picker"></div></section>
+            <section class="mapping-preview-section"><div class="mapping-preview-head"><div><span class="eyebrow">映射预览</span><strong>资料会填入这些位置</strong></div><button id="refresh-layout-preview" class="secondary-action" type="button">检查映射</button></div><div id="mapping-preview" class="mapping-preview"></div></section>
+            <section class="recipe-section"><div><span class="eyebrow">版式方案</span><strong>保存后可用于同类模板</strong></div><div class="recipe-actions"><input id="recipe-name" type="text" maxlength="80" placeholder="例如：产品目录单页版"><button id="save-layout-recipe" class="secondary-action" type="button">保存方案</button></div><div id="recipe-list" class="recipe-list"></div></section>
+          </div>
+          <details class="advanced-layout-editor"><summary>高级映射 JSON</summary><textarea id="layout-editor" class="json-editor" spellcheck="false" aria-label="layout-config.json 编辑器"></textarea></details>
         </section>
         <section id="panel-structure" class="panel">
           <div class="panel-toolbar"><div><strong>模板结构</strong><span id="structure-summary">请先上传模板</span></div></div>
@@ -147,6 +151,8 @@
               <span class="eyebrow">导出设置</span>
               <label>输出文件名<input id="output-filename" type="text" value="finished.pptx"></label>
               <label class="check-row"><input id="strict-mode" type="checkbox"><span>严格校验必填字段</span></label>
+              <button id="run-preflight" class="secondary-action preflight-action" type="button">生成前检查</button>
+              <div id="preflight-result" class="preflight-result hidden"></div>
               <button id="run-export" class="primary-action" type="button">生成 PPTX</button>
               <p class="hint">买家看板项目会自动使用买家专用排版与图片管线。</p>
             </div>

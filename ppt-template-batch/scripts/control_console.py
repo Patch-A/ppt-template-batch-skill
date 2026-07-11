@@ -718,6 +718,9 @@ class ConsoleState:
         if "layout_instruction" not in project:
             project["layout_instruction"] = ""
             changed = True
+        if "layout_recipes" not in project:
+            project["layout_recipes"] = []
+            changed = True
         if changed:
             write_json(paths["project"], project)
         return {
@@ -741,6 +744,160 @@ class ConsoleState:
         paths = self.require(slug)
         write_json(paths["records"] if kind == "records" else paths["layout"], payload)
         self.touch(paths)
+
+    def mapping_preview(self, slug: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        paths = self.require(slug)
+        config = config if isinstance(config, dict) else read_json(paths["layout"])
+        inspection = self.inspect_template(paths["template"])
+        data = read_json(paths["records"])
+        records = buyer_records(data)
+        globals_data = record_globals(data)
+        shapes_by_slide = {
+            int(slide.get("index", 0)): {int(shape.get("index", 0)): shape for shape in slide.get("shapes", [])}
+            for slide in inspection.get("slides", [])
+        }
+        entries: list[dict[str, Any]] = []
+        warnings: list[str] = []
+
+        def sample_value(field: str) -> str:
+            source: Any = globals_data if field.startswith("globals.") else (records[0] if records else {})
+            key = field.split(".", 1)[1] if "." in field else field
+            if not isinstance(source, dict):
+                return ""
+            for part in key.split("."):
+                if not isinstance(source, dict) or part not in source:
+                    return ""
+                source = source[part]
+            return str(source or "")
+
+        def collect(slide_index: int, specs: Any, kind: str) -> None:
+            if not isinstance(specs, list):
+                return
+            for spec in specs:
+                if not isinstance(spec, dict):
+                    continue
+                field = str(spec.get("field") or spec.get("template") or spec.get("value") or "固定内容")
+                shape_index = spec.get("shape_index")
+                shape = shapes_by_slide.get(slide_index, {}).get(int(shape_index or 0))
+                target = f"第 {slide_index} 页 · 元素 {shape_index}" if shape_index else f"第 {slide_index} 页 · 自定义区域"
+                if shape_index and shape is None:
+                    warnings.append(f"{target} 不存在，请重新选择模板元素。")
+                entries.append({
+                    "slide_index": slide_index,
+                    "shape_index": shape_index,
+                    "shape_name": str((shape or {}).get("name") or "自定义区域"),
+                    "kind": kind,
+                    "field": field,
+                    "sample": sample_value(field)[:80],
+                    "target": target,
+                })
+
+        for slide in config.get("slides", []) if isinstance(config.get("slides"), list) else []:
+            if isinstance(slide, dict):
+                index = int(slide.get("slide_index") or 0)
+                collect(index, slide.get("texts"), "文本")
+                collect(index, slide.get("images"), "图片")
+        repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
+        if repeat:
+            index = int(repeat.get("source_slide_index") or repeat.get("start_slide_index") or 0)
+            collect(index, repeat.get("texts"), "批量文本")
+            collect(index, repeat.get("images"), "批量图片")
+        if not entries:
+            warnings.append("尚未找到可预览的映射。请先用自然语言生成映射或选择一个已保存方案。")
+        return {
+            "entries": entries,
+            "warnings": list(dict.fromkeys(warnings)),
+            "record_count": len(records),
+            "template_ready": bool(inspection.get("ready")),
+        }
+
+    def export_preflight(self, slug: str) -> dict[str, Any]:
+        paths = self.require(slug)
+        project = read_json(paths["project"])
+        config = read_json(paths["layout"])
+        data = read_json(paths["records"])
+        records = buyer_records(data)
+        mode = str(project.get("mode", "generic"))
+        if mode == "buyer_board":
+            return {
+                "ok": bool(paths["template"].is_file() and records),
+                "errors": ([] if paths["template"].is_file() else ["尚未上传 PPTX 模板。"])
+                + ([] if records else ["尚未填写买家资料。"]),
+                "warnings": [],
+                "mapping_count": 0,
+                "record_count": len(records),
+                "expected_slide_count": 1 + len(records),
+            }
+        if mode == "buyer_briefing":
+            pages = data.get("pages", []) if isinstance(data, dict) else []
+            return {
+                "ok": bool(paths["template"].is_file() and pages),
+                "errors": ([] if paths["template"].is_file() else ["尚未上传 PPTX 模板。"])
+                + ([] if pages else ["尚未填写买家商情页面。"]),
+                "warnings": [],
+                "mapping_count": 0,
+                "record_count": record_count(data),
+                "expected_slide_count": len(pages),
+            }
+        preview = self.mapping_preview(slug, config)
+        errors: list[str] = []
+        warnings = list(preview["warnings"])
+        if not paths["template"].is_file():
+            errors.append("尚未上传 PPTX 模板。")
+        if project.get("mode") == "generic" and not records:
+            errors.append("尚未导入可批量填充的资料。")
+        if project.get("mode") == "generic" and not preview["entries"]:
+            errors.append("尚未配置字段映射。")
+        required = [str(value) for value in config.get("required_fields", []) if str(value).strip()]
+        for record_index, record in enumerate(records, start=1):
+            for field in required:
+                key = field.split(".")[-1]
+                if not str(record.get(key, "") or "").strip():
+                    errors.append(f"第 {record_index} 条资料缺少必填字段：{field}。")
+        for entry in preview["entries"]:
+            if entry["kind"].endswith("图片") and entry["sample"] and not Path(entry["sample"]).is_file():
+                warnings.append(f"{entry['target']} 的示例图片路径不可用，导出时会保留空位。")
+        repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
+        template_slide_count = len(self.inspect_template(paths["template"]).get("slides") or [])
+        expected_slide_count = template_slide_count + max(len(records) - 1, 0) if repeat else max(template_slide_count, 1)
+        return {
+            "ok": not errors,
+            "errors": list(dict.fromkeys(errors)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "mapping_count": len(preview["entries"]),
+            "record_count": len(records),
+            "expected_slide_count": expected_slide_count,
+        }
+
+    def save_layout_recipe(self, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        paths = self.require(slug)
+        name = str(payload.get("name", "") or "").strip()[:80]
+        if not name:
+            raise ValueError("请为版式方案填写名称。")
+        project = read_json(paths["project"])
+        recipes = [item for item in project.get("layout_recipes", []) if isinstance(item, dict)]
+        recipe = {
+            "id": uuid.uuid4().hex[:10],
+            "name": name,
+            "created_at": utc_now(),
+            "instruction": str(payload.get("instruction", project.get("layout_instruction", "")) or ""),
+            "layout_config": read_json(paths["layout"]),
+        }
+        recipes.insert(0, recipe)
+        project["layout_recipes"] = recipes[:20]
+        project["updated_at"] = utc_now()
+        write_json(paths["project"], project)
+        return {"recipe": recipe, "recipes": project["layout_recipes"]}
+
+    def apply_layout_recipe(self, slug: str, recipe_id: str) -> dict[str, Any]:
+        paths = self.require(slug)
+        project = read_json(paths["project"])
+        recipe = next((item for item in project.get("layout_recipes", []) if isinstance(item, dict) and item.get("id") == recipe_id), None)
+        if not recipe or not isinstance(recipe.get("layout_config"), dict):
+            raise FileNotFoundError("版式方案不存在。")
+        write_json(paths["layout"], recipe["layout_config"])
+        self.touch(paths, {"layout_instruction": str(recipe.get("instruction", "") or "")})
+        return {"layout_config": recipe["layout_config"], "recipe": recipe, "preview": self.mapping_preview(slug, recipe["layout_config"])}
 
     def import_records_document(self, slug: str, data: bytes, filename: str, instruction: str = "") -> dict[str, Any]:
         paths = self.require(slug)
@@ -1284,6 +1441,46 @@ class ConsoleState:
             "--report", str(job["report"]),
         ]
 
+    def _generic_export_command(self, job: dict[str, Any], paths: dict[str, Path], run_dir: Path) -> list[str]:
+        config = read_json(paths["layout"])
+        data = read_json(paths["records"])
+        records = buyer_records(data)
+        template = paths["template"]
+        layout = paths["layout"]
+        repeat = config.get("repeat") if isinstance(config.get("repeat"), dict) else {}
+        if os.name == "nt" and repeat and records:
+            source_index = int(repeat.get("source_slide_index") or repeat.get("start_slide_index") or 0)
+            template_count = int(repeat.get("template_slide_count") or max(len(self.inspect_template(template).get("slides") or []) - source_index + 1, 1))
+            copy_count = max(len(records) - template_count, 0)
+            if source_index > 0 and copy_count:
+                template = run_dir / "generic-template-expanded.pptx"
+                code, stdout, stderr = run_command([
+                    "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", str(skill_script("duplicate_ppt_slide.ps1")),
+                    "-InputPpt", str(paths["template"]),
+                    "-OutputPpt", str(template),
+                    "-SourceSlideIndex", str(source_index),
+                    "-CopyCount", str(copy_count),
+                ])
+                if code != 0:
+                    raise RuntimeError(stderr or stdout or "PowerPoint 无法复制通用模板页。")
+                expanded_config = json.loads(json.dumps(config))
+                expanded_config["repeat"]["template_slide_count"] = len(records)
+                layout = run_dir / "generic-layout-expanded.json"
+                write_json(layout, expanded_config)
+        command = [
+            sys.executable, str(generic_pipeline_script()),
+            "--template", str(template),
+            "--records", str(paths["records"]),
+            "--layout-config", str(layout),
+            "--output", str(job["output"]),
+            "--workspace", str(run_dir),
+            "--report", str(job["report"]),
+        ]
+        if job["strict"]:
+            command.append("--strict")
+        return command
+
     def _run_export_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
         paths = self.require(str(job["project"]))
@@ -1295,23 +1492,12 @@ class ConsoleState:
             elif job["pipeline_mode"] == "buyer_briefing":
                 command = self._briefing_export_command(job, paths, run_dir)
             else:
-                command = [
-                    sys.executable,
-                    str(generic_pipeline_script()),
-                    "--template", str(paths["template"]),
-                    "--records", str(paths["records"]),
-                    "--layout-config", str(paths["layout"]),
-                    "--output", str(job["output"]),
-                    "--workspace", str(run_dir),
-                    "--report", str(job["report"]),
-                ]
-                if job["strict"]:
-                    command.append("--strict")
+                command = self._generic_export_command(job, paths, run_dir)
             returncode, stdout, stderr = run_command(command)
             if returncode != 0:
                 raise RuntimeError(stderr or stdout or "PPTX生成失败。")
             preview_source = run_dir / "previews"
-            if job["pipeline_mode"] in {"buyer_board", "buyer_briefing"} and not any(preview_source.glob("*.png")):
+            if not any(preview_source.glob("*.png")):
                 preview_code, preview_stdout, preview_stderr = run_command([
                     "powershell",
                     "-NoProfile",
@@ -1338,7 +1524,7 @@ class ConsoleState:
             report_data["pipeline_mode"] = job["pipeline_mode"]
             report_data["record_count"] = record_count(read_json(paths["records"]))
             report_data["preview_count"] = len(preview_files)
-            if job["pipeline_mode"] in {"buyer_board", "buyer_briefing"}:
+            if job["pipeline_mode"] in {"buyer_board", "buyer_briefing", "generic"}:
                 write_json(Path(job["report"]), report_data)
             self.set_job(
                 job_id,
@@ -1410,13 +1596,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if parts == ["api", "health"]:
                 self.send_json({
                     "ok": True,
-                    "version": 4,
+                    "version": 5,
                     "features": [
                         "network-probe",
                         "powershell-fallback",
                         "qualified-buyer-research",
                         "document-import",
                         "natural-language-layout",
+                        "layout-preflight",
+                        "layout-recipes",
+                        "json-recovery",
                     ],
                 })
             elif parts == ["api", "model-settings"]:
@@ -1458,6 +1647,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self.send_json(self.state.import_records_document(parts[2], self.read_body(MAX_UPLOAD_BYTES), filename, instruction))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-from-instruction":
                 self.send_json(self.state.generate_layout_from_instruction(parts[2], self.read_json_body()))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-preview":
+                payload = self.read_json_body()
+                self.send_json(self.state.mapping_preview(parts[2], payload.get("layout_config")))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "preflight":
+                self.send_json(self.state.export_preflight(parts[2]))
+            elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "layout-recipes":
+                self.send_json(self.state.save_layout_recipe(parts[2], self.read_json_body()), HTTPStatus.CREATED)
+            elif len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "layout-recipes" and parts[5] == "apply":
+                self.send_json(self.state.apply_layout_recipe(parts[2], parts[4]))
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "research-buyers":
                 self.send_json(self.state.create_research_job(parts[2], self.read_json_body()), HTTPStatus.ACCEPTED)
             elif len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "run":

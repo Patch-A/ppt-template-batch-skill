@@ -303,15 +303,100 @@ The website value must be a domain only, without http or https.
 """
 
 
-def parse_json_payload(text: str) -> dict[str, Any]:
-    text = (text or "").strip()
+def extract_json_object(text: str) -> str:
+    """Return the first complete JSON object while ignoring braces in strings."""
+    text = (text or "").strip().lstrip("\ufeff")
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
     text = re.sub(r"\s*```$", "", text)
-    first = text.find("{")
-    last = text.rfind("}")
-    if first >= 0 and last > first:
-        text = text[first:last + 1]
-    return json.loads(text)
+    start = text.find("{")
+    if start < 0:
+        return text
+    depth = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return text[start:]
+
+
+def repair_common_json_issues(text: str) -> str:
+    """Apply only deterministic, non-semantic fixes before requesting model repair."""
+    text = extract_json_object(text)
+    text = text.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    output: list[str] = []
+    quote = ""
+    escaped = False
+    for char in text:
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            elif char in "\r\n\t":
+                output.append({"\r": "\\r", "\n": "\\n", "\t": "\\t"}[char])
+                continue
+        elif char == '"':
+            quote = char
+        output.append(char)
+    return "".join(output)
+
+
+def parse_json_payload(text: str) -> dict[str, Any]:
+    raw = extract_json_object(text)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = json.loads(repair_common_json_issues(raw))
+    if not isinstance(payload, dict):
+        raise ValueError("Model result must be a JSON object.")
+    return payload
+
+
+def chat_completion_content(api_key: str, base_url: str, payload: dict[str, Any]) -> str:
+    try:
+        response = api_post_json(base_url, "/chat/completions", api_key, payload)
+    except RuntimeError as exc:
+        if "response_format" not in str(exc) and "json_object" not in str(exc):
+            raise
+        fallback = dict(payload)
+        fallback.pop("response_format", None)
+        response = api_post_json(base_url, "/chat/completions", api_key, fallback)
+    choices = response.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"No choices returned by chat completion: {json.dumps(response, ensure_ascii=False)[:1200]}")
+    return str(choices[0].get("message", {}).get("content") or "{}")
+
+
+def repair_model_json(api_key: str, base_url: str, model_name: str, invalid_content: str) -> dict[str, Any]:
+    repair_prompt = """Convert the following model output into one valid JSON object. Preserve every buyer field and value when possible. Do not add commentary, markdown, or new facts. Output only JSON with a top-level buyers array.\n\nMalformed output:\n"""
+    content = chat_completion_content(api_key, base_url, {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "You repair malformed JSON. Return JSON only."},
+            {"role": "user", "content": repair_prompt + invalid_content[:60000]},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+    })
+    return parse_json_payload(content)
 
 
 def buyer_result_schema() -> dict[str, Any]:
@@ -447,19 +532,22 @@ def fetch_json_with_chat(
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
     }
+    content = chat_completion_content(api_key, base_url, payload)
     try:
-        response = api_post_json(base_url, "/chat/completions", api_key, payload)
-    except RuntimeError as exc:
-        if "response_format" not in str(exc) and "json_object" not in str(exc):
-            raise
-        payload.pop("response_format", None)
-        response = api_post_json(base_url, "/chat/completions", api_key, payload)
-    choices = response.get("choices") or []
-    if not choices:
-        raise RuntimeError(f"No choices returned by chat completion: {json.dumps(response, ensure_ascii=False)[:1200]}")
-    content = choices[0].get("message", {}).get("content") or "{}"
-    payload = parse_json_payload(content)
-    return payload.get("buyers", [])
+        result = parse_json_payload(content)
+    except (json.JSONDecodeError, ValueError) as exc:
+        try:
+            result = repair_model_json(api_key, base_url, model_name, content)
+        except Exception as repair_exc:
+            location = f"line {exc.lineno}, column {exc.colno}" if isinstance(exc, json.JSONDecodeError) else str(exc)
+            raise RuntimeError(
+                "模型返回的买家资料格式不完整，系统已自动尝试修复一次但仍未成功。"
+                f"原始格式问题：{location}。请重试搜索或更换模型。"
+            ) from repair_exc
+    buyers = result.get("buyers", [])
+    if not isinstance(buyers, list):
+        raise RuntimeError("模型返回的 buyers 字段不是列表，已停止回填以保护现有资料。")
+    return buyers
 
 
 def fetch_buyers(

@@ -10,6 +10,7 @@ from typing import Any
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches
 
 try:
@@ -364,18 +365,29 @@ def duplicate_slide(presentation: Presentation, source_index: int):
     blank_layout = presentation.slide_layouts[6]
     new_slide = presentation.slides.add_slide(blank_layout)
 
-    for shape in source_slide.shapes:
-        new_slide.shapes._spTree.insert_element_before(copy.deepcopy(shape.element), "p:extLst")
-
+    # Copied XML keeps the source rIds. Create equivalent relationships on the
+    # new slide and rewrite those rIds so PowerPoint can open the result.
+    relationship_ids: dict[str, str] = {}
     for rel in source_slide.part.rels.values():
-        if "notesSlide" in rel.reltype:
-            continue
-        if rel.rId in new_slide.part.rels:
+        if "notesSlide" in rel.reltype or "slideLayout" in rel.reltype:
             continue
         try:
-            new_slide.part.rels.add_relationship(rel.reltype, rel._target, rel.rId)
+            relationship_ids[rel.rId] = new_slide.part.relate_to(
+                rel._target,
+                rel.reltype,
+                is_external=bool(rel.is_external),
+            )
         except Exception:
-            pass
+            continue
+
+    for shape in source_slide.shapes:
+        copied_shape = copy.deepcopy(shape.element)
+        for element in copied_shape.iter():
+            for attribute in (qn("r:embed"), qn("r:link"), qn("r:id")):
+                source_rid = element.get(attribute)
+                if source_rid in relationship_ids:
+                    element.set(attribute, relationship_ids[source_rid])
+        new_slide.shapes._spTree.insert_element_before(copied_shape, "p:extLst")
     return new_slide
 
 

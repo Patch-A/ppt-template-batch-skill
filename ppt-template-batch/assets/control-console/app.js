@@ -372,6 +372,103 @@ function renderOutputs(outputs) {
   });
 }
 
+function sourceSlideIndex() {
+  return Number(state.current && state.current.project && state.current.project.generic_source_slide ||
+    state.current && state.current.layout_config && state.current.layout_config.repeat && state.current.layout_config.repeat.source_slide_index || 1);
+}
+
+function renderPagePicker(template) {
+  const picker = $("#page-picker");
+  if (!picker) return;
+  const selected = sourceSlideIndex();
+  const slides = template && template.slides || [];
+  if (!slides.length) {
+    picker.innerHTML = '<div class="page-picker-empty">上传模板后可选择批量页面。</div>';
+    return;
+  }
+  picker.innerHTML = slides.map(function (slide) {
+    const text = (slide.shapes || []).filter(function (shape) { return shape.text; }).slice(0, 3).map(function (shape) { return shape.text; }).join(" · ");
+    return '<button class="page-card ' + (slide.index === selected ? 'selected' : '') + '" data-source-slide="' + slide.index + '" type="button"><span>第 ' + slide.index + ' 页</span><small>' + escapeHtml(text || '版式页面') + '</small></button>';
+  }).join("");
+  $$("[data-source-slide]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      state.current.project.generic_source_slide = Number(button.dataset.sourceSlide);
+      renderPagePicker(state.current.template);
+      showToast("已选择第 " + button.dataset.sourceSlide + " 页作为批量页面");
+    });
+  });
+}
+
+function renderMappingPreview(preview) {
+  const host = $("#mapping-preview");
+  if (!host) return;
+  const entries = preview && preview.entries || [];
+  const warnings = preview && preview.warnings || [];
+  const rows = entries.map(function (entry) {
+    return '<div class="mapping-row"><span class="mapping-target">' + escapeHtml(entry.target) + '</span><span class="mapping-arrow">&#8594;</span><span><strong>' + escapeHtml(entry.field) + '</strong><small>' + escapeHtml(entry.sample || '当前暂无示例值') + '</small></span></div>';
+  }).join("");
+  const notices = warnings.map(function (warning) { return '<p class="mapping-warning">' + escapeHtml(warning) + '</p>'; }).join("");
+  host.innerHTML = rows || '<div class="mapping-empty">生成映射后，这里会显示每个字段的实际落点。</div>';
+  if (notices) host.innerHTML += '<div class="mapping-warnings">' + notices + '</div>';
+}
+
+function renderRecipes(recipes) {
+  const list = $("#recipe-list");
+  if (!list) return;
+  if (!recipes || !recipes.length) {
+    list.innerHTML = '<span class="recipe-empty">还没有保存的版式方案</span>';
+    return;
+  }
+  list.innerHTML = recipes.map(function (recipe) {
+    return '<button class="recipe-item" data-recipe-id="' + escapeHtml(recipe.id) + '" type="button"><strong>' + escapeHtml(recipe.name) + '</strong><small>' + formatDate(recipe.created_at) + '</small></button>';
+  }).join("");
+  $$("[data-recipe-id]").forEach(function (button) {
+    button.addEventListener("click", function () { applyLayoutRecipe(button.dataset.recipeId); });
+  });
+}
+
+async function refreshLayoutPreview(config) {
+  if (!state.current || state.current.project.mode !== "generic") return;
+  try {
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-preview", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({layout_config: config || state.current.layout_config})
+    });
+    state.layoutPreview = result;
+    renderMappingPreview(result);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function saveLayoutRecipe() {
+  if (!state.current) return;
+  const name = $("#recipe-name").value.trim();
+  if (!name) { showToast("请填写版式方案名称", true); return; }
+  try {
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-recipes", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: name, instruction: $("#layout-instruction").value.trim()})
+    });
+    state.current.project.layout_recipes = result.recipes;
+    $("#recipe-name").value = "";
+    renderRecipes(result.recipes);
+    showToast("版式方案已保存");
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function applyLayoutRecipe(recipeId) {
+  if (!state.current) return;
+  try {
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-recipes/" + encodeURIComponent(recipeId) + "/apply", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    state.current.layout_config = result.layout_config;
+    $("#layout-editor").value = pretty(result.layout_config);
+    $("#layout-instruction").value = result.recipe.instruction || "";
+    renderPagePicker(state.current.template);
+    renderMappingPreview(result.preview);
+    updateSteps();
+    showToast("已应用版式方案：" + result.recipe.name);
+  } catch (error) { showToast(error.message, true); }
+}
+
 function openPreview(filename, count) {
   if (!state.current || !count) return;
   const slug = state.current.project.slug;
@@ -551,9 +648,7 @@ function renderProject() {
   $("#records-editor").value = pretty(data.records);
   $("#layout-editor").value = pretty(data.layout_config);
   $("#layout-instruction").value = data.project.layout_instruction || "";
-  const sourceSlide = data.layout_config && data.layout_config.repeat && data.layout_config.repeat.source_slide_index;
-  $("#layout-source-slide").max = Math.max(1, Number(data.template.slide_count || 1));
-  $("#layout-source-slide").value = sourceSlide || Math.min(2, Math.max(1, Number(data.template.slide_count || 1)));
+  if (!data.project.generic_source_slide) data.project.generic_source_slide = data.layout_config && data.layout_config.repeat && data.layout_config.repeat.source_slide_index || Math.min(2, Math.max(1, Number(data.template.slide_count || 1)));
   $("#layout-summary").textContent = mappingCount(data.layout_config) ?
     (data.layout_config.cover ? "买家看板映射已就绪" : mappingCount(data.layout_config) + " 组页面映射") : "尚未配置映射";
   $("#output-filename").value = data.project.export && data.project.export.filename || "finished.pptx";
@@ -571,6 +666,12 @@ function renderProject() {
   setDataView(data.project.mode === "buyer_board" ? "buyer" : (data.project.mode === "buyer_briefing" ? "briefing" : "json"), false);
   renderStructure(data.template);
   renderOutputs(data.outputs);
+  $("#generic-layout-tools").classList.toggle("hidden", data.project.mode !== "generic");
+  if (data.project.mode === "generic") {
+    renderPagePicker(data.template);
+    renderRecipes(data.project.layout_recipes || []);
+    refreshLayoutPreview(data.layout_config);
+  }
   updateModelBadge();
   updateSteps();
   renderProjects();
@@ -711,14 +812,16 @@ async function generateLayoutFromInstruction() {
     const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/layout-from-instruction", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({instruction: instruction, source_slide_index: Number($("#layout-source-slide").value || 0)})
+      body: JSON.stringify({instruction: instruction, source_slide_index: sourceSlideIndex()})
     });
     state.current.layout_config = result.layout_config;
     state.current.project.layout_instruction = instruction;
     $("#layout-editor").value = pretty(result.layout_config);
     $("#layout-summary").textContent = mappingCount(result.layout_config) + " 组页面映射";
+    renderPagePicker(state.current.template);
+    await refreshLayoutPreview(result.layout_config);
     updateSteps();
-    showToast("已生成起步映射，请结合模板结构检查元素编号");
+    showToast("已生成映射，已在下方显示字段落点");
   } catch (error) {
     showToast(error.message, true);
   } finally {
@@ -1025,6 +1128,29 @@ async function pollJob(jobId) {
   }
 }
 
+function renderPreflight(result) {
+  const host = $("#preflight-result");
+  const errors = result.errors || [];
+  const warnings = result.warnings || [];
+  host.classList.remove("hidden");
+  host.className = "preflight-result " + (result.ok ? "ready" : "failed");
+  const summary = result.ok ? "检查通过：预计 " + result.expected_slide_count + " 页，" + result.record_count + " 条资料" : "检查发现 " + errors.length + " 个问题";
+  host.innerHTML = '<strong>' + escapeHtml(summary) + '</strong>' +
+    errors.map(function (item) { return '<span class="preflight-error">' + escapeHtml(item) + '</span>'; }).join("") +
+    warnings.map(function (item) { return '<span class="preflight-warning">' + escapeHtml(item) + '</span>'; }).join("");
+}
+
+async function runPreflight() {
+  if (!state.current) return null;
+  try {
+    const result = await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/preflight", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    renderPreflight(result);
+    if (!result.ok) showToast("请先处理生成前检查中的问题", true);
+    else showToast("生成前检查通过");
+    return result;
+  } catch (error) { showToast(error.message, true); return null; }
+}
+
 async function runExport() {
   if (!state.current) return;
   try {
@@ -1043,6 +1169,9 @@ async function runExport() {
     await api("/api/projects/" + encodeURIComponent(state.current.project.slug) + "/document/layout", {
       method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(layout)
     });
+    state.current.layout_config = layout;
+    const preflight = await runPreflight();
+    if (!preflight || !preflight.ok) return;
     $("#run-export").disabled = true;
     $("#job-status").textContent = "准备中";
     $("#job-status").className = "job-status running";
@@ -1099,6 +1228,13 @@ $("#research-need").addEventListener("blur", applyResearchDefaults);
   $(selector).addEventListener("input", function () { this.dataset.autoDefault = ""; });
 });
 $("#run-export").addEventListener("click", runExport);
+$("#run-preflight").addEventListener("click", runPreflight);
+$("#refresh-layout-preview").addEventListener("click", function () {
+  if (!state.current) return;
+  try { refreshLayoutPreview(parseEditor("#layout-editor", "版式映射")); }
+  catch (error) { showToast(error.message, true); }
+});
+$("#save-layout-recipe").addEventListener("click", saveLayoutRecipe);
 $("#add-briefing-page").addEventListener("click", function () {
   currentBriefing().pages.push(blankBriefingPage());
   renderBriefingForm();
