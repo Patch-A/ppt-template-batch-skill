@@ -15,6 +15,26 @@ The workflow is designed for teams that already have a PPT template and need to 
 - Batch-generate PPTX files through Microsoft Office, WPS Presentation, or compatibility mode.
 - Run preflight checks for missing mapped fields, unresolved placeholders, missing assets, and oversized content before export.
 
+## Console Walkthrough
+
+### 1. Import Data And Confirm Fields
+
+Paste source material or import a spreadsheet, then confirm the imported column names before mapping them to the template. This keeps data preparation independent from any specific PPT layout.
+
+![Import data and confirm fields](docs/images/console-data-import.png)
+
+### 2. Select Repeated Pages And Review Mappings
+
+Choose the template page that should repeat for each record, describe the layout in natural language, and review the resulting field-to-element mappings before export.
+
+![Select repeated pages and review mappings](docs/images/console-layout-mapping.png)
+
+### 3. Run Preflight Before Export
+
+Choose the local presentation engine, validate required data and mappings, then generate PPTX files with an export history that preserves previous deliverables.
+
+![Run preflight before export](docs/images/console-export-preflight.png)
+
 ## What this repo contains
 
 - `ppt-template-batch/`: the Codex skill package.
