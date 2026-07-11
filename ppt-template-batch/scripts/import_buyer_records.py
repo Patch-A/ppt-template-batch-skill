@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +27,33 @@ def normalize_key(value: Any) -> str:
 def canonical_field(key: Any) -> str | None:
     normalized = normalize_key(key)
     for field, aliases in FIELD_ALIASES.items():
-        if normalized in {normalize_key(alias) for alias in aliases}:
-            return field
+        for alias in aliases:
+            normalized_alias = normalize_key(alias)
+            if normalized == normalized_alias or (len(normalized_alias) >= 3 and normalized.startswith(normalized_alias)):
+                return field
     return None
+
+
+def tabular_records(raw_text: str) -> list[dict[str, str]]:
+    lines = [line for line in raw_text.replace("\r\n", "\n").split("\n") if line.strip()]
+    if len(lines) < 2 or "\t" not in lines[0]:
+        return []
+    headers = next(csv.reader([lines[0]], delimiter="\t"), [])
+    if len(headers) < 2 or sum(1 for header in headers if canonical_field(header)) < 2:
+        return []
+
+    records: list[dict[str, str]] = []
+    for row in csv.reader(StringIO("\n".join(lines[1:])), delimiter="\t"):
+        if not any(cell.strip() for cell in row):
+            continue
+        record = {
+            header: value.strip()
+            for header, value in zip(headers, row)
+            if header.strip() and value.strip()
+        }
+        if record:
+            records.append(record)
+    return records
 
 
 def source_records(raw_text: str, parsed: Any | None) -> list[dict[str, Any]]:
@@ -36,7 +62,7 @@ def source_records(raw_text: str, parsed: Any | None) -> list[dict[str, Any]]:
     elif isinstance(parsed, list):
         values = parsed
     else:
-        values = paragraph_records(raw_text)
+        values = tabular_records(raw_text) or paragraph_records(raw_text)
     return [item for item in values if isinstance(item, dict)]
 
 
@@ -51,6 +77,8 @@ def normalize_record(item: dict[str, Any], default_country: str) -> dict[str, st
             continue
         field = canonical_field(key)
         if field:
+            if field == "name":
+                text = re.sub(r"^\s*\d+\s*[.、)]\s*", "", text)
             normalized[field] = text
         elif key == "title" and not normalized["name"]:
             normalized["name"] = text
