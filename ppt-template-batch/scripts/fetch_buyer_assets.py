@@ -78,6 +78,7 @@ LOGO_REJECT_HINTS = [
 SCREENSHOT_HINTS = ["screenshot", "screen", "homepage", "website"]
 MAX_PAGE_CANDIDATES = 10
 MIN_IMAGE_BYTES = 5 * 1024
+MIN_LOGO_BYTES = 512
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MIN_VISUAL_WIDTH = 240
 MIN_VISUAL_HEIGHT = 140
@@ -88,7 +89,7 @@ BROWSER_VIEWPORT_HEIGHT = 1080
 BROWSER_WAIT_MS = 1200
 BROWSER_PAGE_LIMIT = 6
 FETCH_TIMEOUT_SECONDS = 8
-ASSET_LOGIC_VERSION = 2
+ASSET_LOGIC_VERSION = 4
 LOGO_MIN_SCORE = 10
 FETCH_DEADLINE: float | None = None
 
@@ -225,6 +226,10 @@ def extract_inline_svg_logos(base_url: str, html: str, origin: str) -> list[Asse
     candidates: list[AssetCandidate] = []
     for match in re.finditer(r"<svg\b[^>]*>.*?</svg>", html or "", flags=re.I | re.S):
         markup = match.group(0)
+        prefix = (html or "")[max(0, match.start() - 2200):match.start()].lower()
+        in_header = max(prefix.rfind("<header"), prefix.rfind("<nav")) > max(prefix.rfind("</header"), prefix.rfind("</nav"))
+        if not in_header:
+            continue
         opening = markup.split(">", 1)[0]
         width_match = re.search(r"\bwidth=[\"']([0-9.]+)", opening, re.I)
         height_match = re.search(r"\bheight=[\"']([0-9.]+)", opening, re.I)
@@ -297,13 +302,17 @@ def normalized_identity_tokens(*values: str) -> set[str]:
     stopwords = {
         "company", "corporation", "corp", "group", "holdings", "holding", "limited", "ltd",
         "inc", "incorporated", "electronics", "industrial", "industries", "official",
-        "website", "the", "and", "of", "co", "com", "www", "www2",
+        "website", "the", "and", "of", "co", "com", "www", "www2", "logo", "brand",
+        "identity", "image", "images", "icon", "favicon", "header", "navbar", "assets",
+        "asset", "static", "media", "content", "inline", "desktop", "mobile", "light", "dark",
+        "blue", "green", "red", "white", "black", "primary", "secondary", "horizontal", "vertical",
+        "png", "jpg", "jpeg", "svg", "webp", "gif", "ico", "cms", "api", "cdn", "src",
     }
     for value in values:
         text = unicodedata.normalize("NFKD", str(value or ""))
         text = "".join(char for char in text if not unicodedata.combining(char))
         for token in re.findall(r"[a-z0-9]+", text.lower()):
-            if len(token) >= 4 and token not in stopwords:
+            if len(token) >= 3 and token not in stopwords and not token.isdigit():
                 tokens.add(token)
     return tokens
 
@@ -319,6 +328,33 @@ def logo_rejection_reason(candidate: AssetCandidate) -> str:
     if any(hint in normalized for hint in LOGO_REJECT_HINTS):
         return "non_brand_badge_or_banner_hint"
     return ""
+
+
+def candidate_brand_tokens(candidate: AssetCandidate) -> set[str]:
+    src_name = ""
+    if not candidate.src.startswith("data:image/"):
+        src_name = Path(urlparse(candidate.src).path).name
+    tokens = normalized_identity_tokens(src_name, candidate.alt)
+    return {
+        token
+        for token in tokens
+        if not (len(token) >= 8 and all(char in "0123456789abcdef" for char in token))
+    }
+
+
+def logo_brand_mismatch(candidate: AssetCandidate, buyer_name: str, domain: str) -> bool:
+    expected = normalized_identity_tokens(buyer_name, domain)
+    observed = candidate_brand_tokens(candidate)
+    if not expected or not observed:
+        return False
+    overlap = expected.intersection(observed)
+    return not overlap or bool(observed - expected)
+
+
+def logo_candidate_rejection_reason(candidate: AssetCandidate, buyer_name: str, domain: str) -> str:
+    return logo_rejection_reason(candidate) or (
+        "different_or_sub_brand_name" if logo_brand_mismatch(candidate, buyer_name, domain) else ""
+    )
 
 
 def score_logo_candidate(candidate: AssetCandidate, buyer_name: str = "", domain: str = "") -> int:
@@ -341,9 +377,15 @@ def score_logo_candidate(candidate: AssetCandidate, buyer_name: str = "", domain
     if candidate.kind == "inline-svg":
         score += 6
     identity_tokens = normalized_identity_tokens(buyer_name, domain)
-    normalized_target = normalized_identity_tokens(target)
-    if identity_tokens.intersection(normalized_target):
+    observed_brand_tokens = candidate_brand_tokens(candidate)
+    if identity_tokens.intersection(observed_brand_tokens):
         score += 28
+    if logo_brand_mismatch(candidate, buyer_name, domain):
+        score -= 40
+    elif candidate.kind == "inline-svg" and identity_tokens.intersection(normalized_identity_tokens(candidate.page)):
+        score += 18
+    elif candidate.kind != "inline-svg":
+        score -= 8
     if logo_rejection_reason(candidate):
         score -= 100
     return score
@@ -357,7 +399,7 @@ def rank_logo_candidates(candidates: list[AssetCandidate], buyer_name: str, doma
             item
             for item in dedupe_candidates(candidates)
             if has_supported_extension(item.src)
-            and not logo_rejection_reason(item)
+            and not logo_candidate_rejection_reason(item, buyer_name, domain)
             and item.score >= LOGO_MIN_SCORE
         ],
         key=lambda item: item.score,
@@ -824,7 +866,7 @@ def discover_assets_for_domain_light(
 
         ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
         for item in all_logo_candidates:
-            reason = logo_rejection_reason(item) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
+            reason = logo_candidate_rejection_reason(item, buyer_name, domain) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
             if reason:
                 notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
         ranked_visuals = sorted(
@@ -901,7 +943,7 @@ def discover_assets_for_domain_browser(
 
             ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
             for item in all_logo_candidates:
-                reason = logo_rejection_reason(item) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
+                reason = logo_candidate_rejection_reason(item, buyer_name, domain) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
                 if reason:
                     notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
             ranked_visuals = sorted(
@@ -942,7 +984,7 @@ def passes_logo_filter(meta: dict[str, Any], path: Path) -> bool:
         return False
     if path.suffix.lower() == ".svg":
         return meta["bytes"] >= 512
-    if meta["bytes"] < MIN_IMAGE_BYTES:
+    if meta["bytes"] < MIN_LOGO_BYTES:
         return False
     width = meta.get("width") or 0
     height = meta.get("height") or 0

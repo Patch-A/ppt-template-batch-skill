@@ -1163,6 +1163,7 @@ class ConsoleState:
             # Preserve the template's content-page header unless a user
             # explicitly opts into replacing it in layout-config.json.
             current["content"].setdefault("preserve_title", True)
+            current["content"].setdefault("dynamic_row_height", True)
             current.setdefault("defaults", {})
             current["defaults"].update({
                 "cover_title": title,
@@ -1242,6 +1243,8 @@ class ConsoleState:
                     " ".join(str(item.get(key, "") or "") for key in ("bio", "demand_scenarios", "research_notes", "evidence")),
                 )
                 item["bio"] = pad_or_trim_bio(item["bio"])
+                if item["products"] == "需核实具体设备":
+                    warnings.append(f"{item['name'] or f'第{index}家买家'}采购品类目前只能确认到大类，建议人工补充具体设备。")
             if not item["name"]:
                 warnings.append(f"第{index}家买家缺少企业名称。")
             chinese_count = sum(1 for char in item["bio"] if "\u4e00" <= char <= "\u9fff")

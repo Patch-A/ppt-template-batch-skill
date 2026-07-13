@@ -3,11 +3,17 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.util import Inches
+
+
+EMU_PER_INCH = 914400
+EMU_PER_POINT = 12700
 
 
 def load_json(path: Path) -> Any:
@@ -71,6 +77,71 @@ def apply_override_color(shape_or_cell, rgb_hex: str) -> None:
     for paragraph in text_frame.paragraphs:
         for run in paragraph.runs:
             run.font.color.rgb = RGBColor.from_string(rgb_hex)
+
+
+def cell_font_size_pt(cell, default: float = 16.0) -> float:
+    for paragraph in cell.text_frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size is not None:
+                return float(run.font.size.pt)
+    return default
+
+
+def weighted_text_length(text: str) -> float:
+    total = 0.0
+    for char in text:
+        if char == "\n":
+            continue
+        if "\u4e00" <= char <= "\u9fff" or char in "\uff0c\u3002\u3001\uff1b\uff1a\uff08\uff09":
+            total += 1.0
+        elif char.isspace():
+            total += 0.3
+        else:
+            total += 0.55
+    return total
+
+
+def estimate_text_lines(cell, column_width: int, value: str) -> int:
+    font_size = cell_font_size_pt(cell)
+    usable_width = max(
+        Inches(0.5),
+        column_width - int(cell.margin_left or 0) - int(cell.margin_right or 0),
+    )
+    capacity = max(8.0, (usable_width / EMU_PER_INCH) * 72.0 / (font_size * 0.95))
+    logical_lines = str(value or "").splitlines() or [""]
+    return max(1, sum(max(1, math.ceil(weighted_text_length(line) / capacity)) for line in logical_lines))
+
+
+def content_row_height(cell, column_width: int, value: str, value_key: str) -> int:
+    lines = estimate_text_lines(cell, column_width, value)
+    font_size = cell_font_size_pt(cell)
+    vertical_margin_pt = (int(cell.margin_top or 0) + int(cell.margin_bottom or 0)) / EMU_PER_POINT
+    height_inches = (lines * font_size * 1.25 + vertical_margin_pt + 2.0) / 72.0
+    minimum = 0.42 if value_key == "products" else 0.78
+    maximum = 1.45 if value_key == "products" else 2.6
+    return Inches(max(minimum, min(maximum, height_inches)))
+
+
+def adjust_dynamic_row_heights(table_shape, fields: list[dict[str, Any]], buyer: dict[str, Any], enabled: bool) -> None:
+    if not enabled:
+        return
+    table = table_shape.table
+    for field in fields:
+        value_key = str(field.get("value_key", ""))
+        if value_key not in {"products", "bio"}:
+            continue
+        row_index = int(field["row"])
+        value_col = int(field.get("value_column", 1))
+        value = str(buyer.get(value_key, "") or "")
+        cell = table.cell(row_index, value_col)
+        cell.text_frame.word_wrap = True
+        table.rows[row_index].height = content_row_height(
+            cell,
+            table.columns[value_col].width,
+            value,
+            value_key,
+        )
+    table_shape.height = sum(int(row.height) for row in table.rows)
 
 
 def duplicate_slide(presentation: Presentation, source_index: int):
@@ -151,7 +222,8 @@ def fill_content_slides(
         if not preserve_title:
             set_shape_text(slide, title_shape_index, content_title)
 
-        table = get_shape(slide, table_shape_index).table
+        table_shape = get_shape(slide, table_shape_index)
+        table = table_shape.table
         for field in fields:
             row = int(field["row"])
             label_col = int(field.get("label_column", 0))
@@ -168,6 +240,13 @@ def fill_content_slides(
                 apply_override_color(table.cell(row, label_col), field["label_color"])
             if "value_color" in field:
                 apply_override_color(table.cell(row, value_col), field["value_color"])
+
+        adjust_dynamic_row_heights(
+            table_shape,
+            fields,
+            buyer,
+            bool(content_config.get("dynamic_row_height", True)),
+        )
 
 
 def main() -> int:

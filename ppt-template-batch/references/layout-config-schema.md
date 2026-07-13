@@ -81,6 +81,8 @@ Use `repeat` when one source slide should be reused for every record.
 - Use `clear_if_missing: true` to remove stale placeholders when no verified asset exists.
 - Relative image paths are resolved from the `records.json` folder.
 
+Buyer-board configs may additionally use `content.dynamic_row_height: true`. The buyer-board filler keeps short identity rows fixed and recalculates the `products` and `bio` row heights from the populated text while preserving template typography.
+
 ## Batch Input
 
 `records.json` can be a list:

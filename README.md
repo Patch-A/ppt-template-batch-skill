@@ -322,7 +322,8 @@ Depending on the workflow, the workspace may contain:
 - Arbitrary PPT templates still require first-run decomposition and mapping verification.
 - The generic runner supports common shape, table, placeholder, repeated-slide, and image-slot patterns; unusual animations, SmartArt, charts, and complex grouped objects may still need a custom filler.
 - Public website asset fetching is best-effort and depends on local network permissions.
-- Logo selection rejects certification seals, government badges, banners, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
+- Logo selection rejects certification seals, government badges, banners, unrelated business units, subsidiary brands, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
+- Buyer-board procurement products are normalized to concrete purchasable equipment rather than umbrella categories. Product and bio table rows are sized from actual text length so short values do not retain oversized blank rows.
 - Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight. Enable it only for sites whose light HTML pass reports a missing asset.
 - `asset_fetch_report.json` records `logo_confidence`, `logo_source`, `logo_url`, rejected candidates, and timeout/network notes for manual review.
 - AI right-side visual fallback is opt-in and does not generate logos.
