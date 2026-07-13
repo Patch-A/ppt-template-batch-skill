@@ -208,6 +208,39 @@ def normalize_products(value: str, procurement_need: str) -> str:
     return product
 
 
+def split_product_items(value: str) -> list[str]:
+    text = re.sub(r"\s+", "", value or "")
+    text = re.sub(r"^(?:\u91c7\u8d2d\u4ea7\u54c1|\u91c7\u8d2d\u54c1\u7c7b|\u91c7\u8d2d\u9700\u6c42)[:\uff1a]", "", text)
+    text = re.sub(r"\u7b49(?:\u5305\u88c5\u5236\u54c1|\u4ea7\u54c1|\u8bbe\u5907)?$", "", text)
+    return [item.strip("\u3001\uff0c,;\uff1b") for item in re.split(r"[\u3001\uff0c,;\uff1b/]+", text) if item.strip("\u3001\uff0c,;\uff1b")]
+
+
+def refine_buyer_products(value: str, procurement_need: str, context: str = "") -> str:
+    """Prevent a failed shortlist response from copying the global need to every buyer."""
+    product = normalize_products(value, procurement_need)
+    requested = split_product_items(procurement_need)
+    returned = split_product_items(product)
+    if len(requested) <= 3 or not requested:
+        return product
+    returned_set = set(returned)
+    copied_all = product == normalize_products(procurement_need, procurement_need) or set(requested).issubset(returned_set)
+    if not copied_all:
+        return product
+
+    evidence = re.sub(r"\s+", "", context or "")
+    ranked = sorted(
+        ((item, evidence.count(item)) for item in requested),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    selected = [item for item, hits in ranked if hits > 0][:3]
+    if not selected:
+        # A model-only provider may not return demand evidence. Keep the
+        # result usable but deliberately narrower than the global request.
+        selected = requested[:2]
+    return "\u3001".join(selected)
+
+
 def build_strategy_text(strategy: dict[str, Any] | None) -> str:
     strategy = strategy or {}
     preferred_industries = str(strategy.get("preferred_industries", "") or "").strip()
@@ -270,6 +303,8 @@ Selection rules:
 - Do not list a manufacturer only because it is in the same industry. A manufacturer is valid only when it likely purchases the requested product as production equipment, process equipment, components, consumables, spare parts, or resale inventory.
 - Exclude or downgrade direct competing OEMs whose main business is making and selling the same requested product, unless public business fit suggests importing/distribution or internal use.
 - The products field must be one to three concrete product names separated by Chinese commas, such as "五轴联动加工中心、五轴精密铣削中心". Never include verbs, "用于", processing scenarios, or a full sentence in this field.
+- Do not copy the full Procurement need into every buyer. For each company, select only the one to three products that its factories, operations, projects, maintenance work, or resale business would actually buy. The product list must vary when the business scenarios differ.
+- The demand_scenarios and evidence must justify the exact products selected for that company; a generic statement that it needs packaging or equipment is insufficient.
 - demand_scenarios must explain exactly where and why the requested product is needed.
 - import_signal must summarize public import/distribution/foreign-sourcing evidence, or be empty when no evidence is available.
 - evidence must summarize the strongest qualification evidence.
@@ -692,7 +727,14 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
                 "name": (item.get("name") or "").strip(),
                 "country": country,
                 "website": normalize_website(item.get("website", "")),
-                "products": normalize_products(item.get("products", ""), str(research_meta.get("procurement_need", ""))),
+                "products": refine_buyer_products(
+                    item.get("products", ""),
+                    str(research_meta.get("procurement_need", "")),
+                    " ".join(
+                        str(item.get(key, "") or "")
+                        for key in ("bio", "demand_scenarios", "research_notes", "evidence")
+                    ),
+                ),
                 "bio": pad_or_trim_bio(item.get("bio", "")),
                 "logo_path": "",
                 "site_image_path": "",

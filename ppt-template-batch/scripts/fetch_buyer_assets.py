@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -67,6 +69,12 @@ SOCIAL_SOURCES = [
 ]
 MAP_HINTS = ["google.com", "maps.app.goo.gl"]
 LOGO_HINTS = ["logo", "brand", "identity"]
+LOGO_REJECT_HINTS = [
+    "sale", "noti", "certificate", "certification", "award", "government",
+    "bo-cong", "dang-ky", "registered", "registration", "seal", "badge",
+    "trust", "verify", "validation", "compliance", "license", "licence",
+    "hero", "banner", "homepage", "preview", "watermark", "captcha",
+]
 SCREENSHOT_HINTS = ["screenshot", "screen", "homepage", "website"]
 MAX_PAGE_CANDIDATES = 10
 MIN_IMAGE_BYTES = 5 * 1024
@@ -80,6 +88,9 @@ BROWSER_VIEWPORT_HEIGHT = 1080
 BROWSER_WAIT_MS = 1200
 BROWSER_PAGE_LIMIT = 6
 FETCH_TIMEOUT_SECONDS = 8
+ASSET_LOGIC_VERSION = 2
+LOGO_MIN_SCORE = 10
+FETCH_DEADLINE: float | None = None
 
 
 @dataclass
@@ -114,6 +125,11 @@ def candidate_base_urls(domain: str) -> list[str]:
 
 def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
+    if FETCH_DEADLINE is not None:
+        remaining = FETCH_DEADLINE - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("asset_fetch_per_buyer_timeout")
+        timeout = max(1, min(timeout, int(remaining)))
     request = Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -121,14 +137,25 @@ def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
             final_url = response.geturl()
             body = response.read()
         return final_url, body, content_type
-    except Exception:
-        if not get_env_var("BUYER_BOARD_ENABLE_CURL_FALLBACK"):
+    except Exception as urllib_exc:
+        # Windows security software can block Python's socket while the native
+        # curl executable is still allowed. Keep the fallback automatic so an
+        # asset fetch does not depend on an undocumented environment switch.
+        if get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK"):
             raise
-        return fetch_url_with_curl(url, timeout)
+        try:
+            return fetch_url_with_curl(url, timeout)
+        except Exception:
+            raise urllib_exc
 
 
 def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
+    if FETCH_DEADLINE is not None:
+        remaining = FETCH_DEADLINE - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("asset_fetch_per_buyer_timeout")
+        timeout = max(1, min(timeout, int(remaining)))
     import subprocess
 
     result = subprocess.run(
@@ -145,8 +172,8 @@ def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, byte
             "\n%{url_effective}\n%{content_type}",
             url,
         ],
-        capture_output=True,
-        timeout=timeout + 5,
+            capture_output=True,
+            timeout=timeout + 2,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
@@ -193,6 +220,32 @@ class AssetHTMLParser(HTMLParser):
                 self.links.append({"href": href, "hint": text_hint})
 
 
+def extract_inline_svg_logos(base_url: str, html: str, origin: str) -> list[AssetCandidate]:
+    """Capture large inline header marks without taking a random screenshot."""
+    candidates: list[AssetCandidate] = []
+    for match in re.finditer(r"<svg\b[^>]*>.*?</svg>", html or "", flags=re.I | re.S):
+        markup = match.group(0)
+        opening = markup.split(">", 1)[0]
+        width_match = re.search(r"\bwidth=[\"']([0-9.]+)", opening, re.I)
+        height_match = re.search(r"\bheight=[\"']([0-9.]+)", opening, re.I)
+        width = float(width_match.group(1)) if width_match else 0
+        height = float(height_match.group(1)) if height_match else 0
+        if width < 60 or height < 15 or len(markup) < 300:
+            continue
+        encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
+        candidates.append(
+            AssetCandidate(
+                src=f"data:image/svg+xml;base64,{encoded}",
+                page=base_url,
+                kind="inline-svg",
+                alt="brand logo",
+                cls=opening,
+                origin=origin,
+            )
+        )
+    return candidates[:4]
+
+
 def dedupe(items: list[str]) -> list[str]:
     seen = set()
     ordered = []
@@ -214,6 +267,8 @@ def dedupe_candidates(candidates: list[AssetCandidate]) -> list[AssetCandidate]:
 
 
 def has_supported_extension(url: str) -> bool:
+    if url.startswith("data:image/svg+xml;base64,"):
+        return True
     path = urlparse(url).path.lower()
     return any(path.endswith(ext) for ext in IMAGE_EXTENSIONS)
 
@@ -237,8 +292,37 @@ def same_host(base_url: str, candidate_url: str) -> bool:
     return urlparse(base_url).netloc.lower() == urlparse(candidate_url).netloc.lower()
 
 
-def score_logo_candidate(candidate: AssetCandidate) -> int:
-    target = " ".join([candidate.src.lower(), candidate.alt.lower(), candidate.cls.lower(), candidate.kind.lower()])
+def normalized_identity_tokens(*values: str) -> set[str]:
+    tokens: set[str] = set()
+    stopwords = {
+        "company", "corporation", "corp", "group", "holdings", "holding", "limited", "ltd",
+        "inc", "incorporated", "electronics", "industrial", "industries", "official",
+        "website", "the", "and", "of", "co", "com", "www", "www2",
+    }
+    for value in values:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        for token in re.findall(r"[a-z0-9]+", text.lower()):
+            if len(token) >= 4 and token not in stopwords:
+                tokens.add(token)
+    return tokens
+
+
+def logo_target(candidate: AssetCandidate) -> str:
+    return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind, candidate.page]).lower()
+
+
+def logo_rejection_reason(candidate: AssetCandidate) -> str:
+    target = logo_target(candidate)
+    normalized = unicodedata.normalize("NFKD", target)
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    if any(hint in normalized for hint in LOGO_REJECT_HINTS):
+        return "non_brand_badge_or_banner_hint"
+    return ""
+
+
+def score_logo_candidate(candidate: AssetCandidate, buyer_name: str = "", domain: str = "") -> int:
+    target = logo_target(candidate)
     score = 0
     if any(hint in target for hint in LOGO_HINTS):
         score += 12
@@ -248,9 +332,38 @@ def score_logo_candidate(candidate: AssetCandidate) -> int:
         score += 3
     if candidate.src.lower().endswith(".svg"):
         score += 2
-    if candidate.origin != "official":
+    if candidate.origin == "official":
+        score += 8
+    else:
         score -= 4
+    if candidate.origin == "maps":
+        score -= 8
+    if candidate.kind == "inline-svg":
+        score += 6
+    identity_tokens = normalized_identity_tokens(buyer_name, domain)
+    normalized_target = normalized_identity_tokens(target)
+    if identity_tokens.intersection(normalized_target):
+        score += 28
+    if logo_rejection_reason(candidate):
+        score -= 100
     return score
+
+
+def rank_logo_candidates(candidates: list[AssetCandidate], buyer_name: str, domain: str) -> list[AssetCandidate]:
+    for item in candidates:
+        item.score = score_logo_candidate(item, buyer_name, domain)
+    ranked = sorted(
+        [
+            item
+            for item in dedupe_candidates(candidates)
+            if has_supported_extension(item.src)
+            and not logo_rejection_reason(item)
+            and item.score >= LOGO_MIN_SCORE
+        ],
+        key=lambda item: item.score,
+        reverse=True,
+    )
+    return ranked
 
 
 def score_visual_candidate(candidate: AssetCandidate) -> int:
@@ -296,6 +409,8 @@ def parse_page(base_url: str, html: str, origin: str = "official") -> tuple[list
 
     logo_candidates: list[AssetCandidate] = []
     visual_candidates: list[AssetCandidate] = []
+
+    logo_candidates.extend(extract_inline_svg_logos(base_url, html, origin))
 
     for item in parser.link_icons:
         logo_candidates.append(AssetCandidate(src=urljoin(base_url, item["src"]), page=base_url, kind=item["kind"], origin=origin))
@@ -438,6 +553,21 @@ def rendered_payload_to_candidates(
             )
         )
 
+    for item in payload.get("inlineSvgs", []):
+        src = item.get("src") or ""
+        if not src:
+            continue
+        logo_candidates.append(
+            AssetCandidate(
+                src=src,
+                page=base_url,
+                kind="inline-svg",
+                alt=item.get("alt", "brand logo"),
+                cls=item.get("className", ""),
+                origin=origin,
+            )
+        )
+
     for item in payload.get("images", []):
         src = item.get("src") or ""
         if not src:
@@ -556,6 +686,24 @@ def extract_rendered_payload(page: Any) -> dict[str, Any]:
               kind: "image",
             });
           });
+          const inlineSvgs = [];
+          document.querySelectorAll("header svg, nav svg").forEach((el) => {
+            const box = el.getBoundingClientRect();
+            if (box.width < 60 || box.height < 15 || box.width * box.height < 1200) return;
+            const markup = el.outerHTML || "";
+            if (!markup) return;
+            let encoded = "";
+            try {
+              encoded = btoa(unescape(encodeURIComponent(markup)));
+            } catch (error) {
+              return;
+            }
+            inlineSvgs.push({
+              src: "data:image/svg+xml;base64," + encoded,
+              alt: "brand logo",
+              className: el.getAttribute("class") || "",
+            });
+          });
           const backgrounds = [];
           document.querySelectorAll("header, nav, main, section, figure, a, div").forEach((el) => {
             const style = getComputedStyle(el);
@@ -580,7 +728,7 @@ def extract_rendered_payload(page: Any) -> dict[str, Any]:
               ].join(" "),
             });
           });
-          return { icons, metaImages, images, backgrounds, links };
+          return { icons, inlineSvgs, metaImages, images, backgrounds, links };
         }
         """
     )
@@ -639,9 +787,17 @@ def discover_assets_for_domain_light(
         all_visual_candidates.extend(visuals)
         notes.append(f"base:{final_url}")
 
-        search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
-        notes.extend(search_notes)
-        for page_url, origin in dedupe([(u, o) for (u, o) in [(url, "official") for url in page_urls] + search_pages]):
+        page_pairs = [(url, "official") for url in page_urls]
+        # Search engines are the slowest and least reliable source. Crawl
+        # official pages first, and only query them when the homepage did not
+        # yield a usable logo or any visual candidate.
+        if not all_visual_candidates:
+            search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
+            notes.extend(search_notes)
+            page_pairs.extend(search_pages)
+        else:
+            notes.append("search_skip:visual_candidate_available")
+        for page_url, origin in dedupe(page_pairs)[:3]:
             try:
                 page_final_url, page_body, page_content_type = fetch_url(page_url)
             except Exception as exc:
@@ -656,16 +812,14 @@ def discover_assets_for_domain_light(
             all_visual_candidates.extend(page_visuals)
             notes.append(f"page:{page_final_url}:origin={origin}")
 
-        for item in all_logo_candidates:
-            item.score = score_logo_candidate(item)
         for item in all_visual_candidates:
             item.score = score_visual_candidate(item)
 
-        ranked_logos = sorted(
-            [item for item in dedupe_candidates(all_logo_candidates) if has_supported_extension(item.src)],
-            key=lambda item: item.score,
-            reverse=True,
-        )
+        ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
+        for item in all_logo_candidates:
+            reason = logo_rejection_reason(item) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
+            if reason:
+                notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
         ranked_visuals = sorted(
             [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
             key=lambda item: item.score,
@@ -735,16 +889,14 @@ def discover_assets_for_domain_browser(
                 all_logo_candidates.extend(logos)
                 all_visual_candidates.extend(visuals)
 
-            for item in all_logo_candidates:
-                item.score = score_logo_candidate(item)
             for item in all_visual_candidates:
                 item.score = score_visual_candidate(item)
 
-            ranked_logos = sorted(
-                [item for item in dedupe_candidates(all_logo_candidates) if has_supported_extension(item.src)],
-                key=lambda item: item.score,
-                reverse=True,
-            )
+            ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
+            for item in all_logo_candidates:
+                reason = logo_rejection_reason(item) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
+                if reason:
+                    notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
             ranked_visuals = sorted(
                 [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
                 key=lambda item: item.score,
@@ -807,7 +959,12 @@ def passes_visual_filter(meta: dict[str, Any], path: Path) -> bool:
 
 def download_asset(candidate: AssetCandidate, output_path: Path, kind: str) -> tuple[Path | None, dict[str, Any]]:
     try:
-        final_url, body, content_type = fetch_url(candidate.src)
+        if candidate.src.startswith("data:image/svg+xml;base64,"):
+            final_url = "inline-logo.svg"
+            body = base64.b64decode(candidate.src.split(",", 1)[1])
+            content_type = "image/svg+xml"
+        else:
+            final_url, body, content_type = fetch_url(candidate.src)
     except Exception as exc:
         return None, {"reason": f"download_failed:{exc.__class__.__name__}"}
     if not content_type.startswith("image/"):
@@ -854,11 +1011,9 @@ def discover_assets_for_domain(
     merged_visuals = visual_candidates[:]
     merged_logos.extend(browser_logos)
     merged_visuals.extend(browser_visuals)
-    for item in merged_logos:
-        item.score = score_logo_candidate(item)
     for item in merged_visuals:
         item.score = score_visual_candidate(item)
-    ranked_logos = sorted(dedupe_candidates(merged_logos), key=lambda item: item.score, reverse=True)
+    ranked_logos = rank_logo_candidates(merged_logos, buyer_name, domain)
     ranked_visuals = sorted(dedupe_candidates(merged_visuals), key=lambda item: item.score, reverse=True)
     return merged_url, ranked_logos, ranked_visuals, notes
 
@@ -906,6 +1061,22 @@ def maybe_generate_ai_visual(buyer: dict[str, Any], assets_dir: Path, enabled: b
         return "", f"ai_fallback_failed:{exc.__class__.__name__}"
 
 
+def logo_confidence(score: int) -> str:
+    if score >= 38:
+        return "high"
+    if score >= 20:
+        return "medium"
+    if score >= LOGO_MIN_SCORE:
+        return "low"
+    return "missing"
+
+
+def display_asset_source(src: str, page: str = "") -> str:
+    if src.startswith("data:image/svg+xml;base64,"):
+        return f"inline-svg:{page}" if page else "inline-svg"
+    return src if len(src) <= 240 else src[:237] + "..."
+
+
 def process_buyer(
     buyer: dict[str, Any],
     assets_dir: Path,
@@ -919,9 +1090,14 @@ def process_buyer(
         "name": buyer.get("name", ""),
         "website": website,
         "logo_hit": False,
+        "logo_confidence": "missing",
+        "logo_source": "",
+        "logo_url": "",
+        "logo_rejected_candidates": [],
         "site_hit": False,
         "site_source": "",
         "asset_mode": asset_mode,
+        "asset_logic_version": ASSET_LOGIC_VERSION,
         "notes": [],
     }
     if not website:
@@ -930,12 +1106,18 @@ def process_buyer(
         return buyer, report
 
     cache_key = website.lower()
-    if cache_key in cache:
-        cached = cache[cache_key]
+    cached = cache.get(cache_key)
+    cached_logo = Path(str(cached.get("logo_path", ""))) if isinstance(cached, dict) and cached.get("logo_path") else None
+    cached_site = Path(str(cached.get("site_image_path", ""))) if isinstance(cached, dict) and cached.get("site_image_path") else None
+    cache_paths_exist = (cached_logo is None or cached_logo.is_file()) and (cached_site is None or cached_site.is_file())
+    if isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION and cache_paths_exist:
         buyer["logo_path"] = cached.get("logo_path", "")
         buyer["site_image_path"] = cached.get("site_image_path", "")
         buyer["asset_fetch_notes"] = cached.get("asset_fetch_notes", "cache_hit")
         report["logo_hit"] = bool(buyer["logo_path"])
+        report["logo_confidence"] = cached.get("logo_confidence", "missing")
+        report["logo_source"] = cached.get("logo_source", "")
+        report["logo_url"] = cached.get("logo_url", "")
         report["site_hit"] = bool(buyer["site_image_path"])
         report["site_source"] = cached.get("site_source", "")
         report["notes"].append("cache_hit")
@@ -950,22 +1132,34 @@ def process_buyer(
     slug = slugify(str(buyer.get("name", "buyer")))
 
     logo_path = ""
+    logo_url = ""
+    logo_source = ""
+    logo_score = 0
     site_image_path = ""
     site_source = ""
     trace = list(notes)
+    report["logo_rejected_candidates"] = [
+        note for note in trace if note.startswith("logo_rejected_candidate:")
+    ][:12]
     if final_url:
         trace.append(f"resolved:{final_url}")
 
     for candidate in logo_candidates[:8]:
         downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-logo", "logo")
-        trace.append(f"logo_try:{candidate.src}:score={candidate.score}:origin={candidate.origin}")
+        trace.append(f"logo_try:{display_asset_source(candidate.src, candidate.page)}:score={candidate.score}:origin={candidate.origin}")
         if not downloaded:
             trace.append(f"logo_reject:{candidate.src}:{meta}")
         if downloaded:
             logo_path = str(downloaded)
-            trace.append(f"logo:{candidate.src}")
+            logo_url = display_asset_source(candidate.src, candidate.page)
+            logo_source = candidate.origin
+            logo_score = candidate.score
+            trace.append(f"logo:{display_asset_source(candidate.src, candidate.page)}")
             trace.append(f"logo_meta:{meta}")
             report["logo_hit"] = True
+            report["logo_confidence"] = logo_confidence(candidate.score)
+            report["logo_source"] = candidate.origin
+            report["logo_url"] = candidate.src
             break
 
     for candidate in visual_candidates[:12]:
@@ -1006,11 +1200,18 @@ def process_buyer(
 
     if logo_path or site_image_path:
         cache[cache_key] = {
+            "asset_logic_version": ASSET_LOGIC_VERSION,
             "logo_path": logo_path,
             "site_image_path": site_image_path,
+            "logo_confidence": logo_confidence(logo_score) if logo_path else "missing",
+            "logo_source": logo_source,
+            "logo_url": logo_url,
             "site_source": site_source,
             "asset_fetch_notes": buyer["asset_fetch_notes"],
         }
+    report["logo_confidence"] = logo_confidence(logo_score) if logo_path else "missing"
+    report["logo_source"] = logo_source
+    report["logo_url"] = logo_url
     report["site_source"] = site_source
     report["notes"] = trace
     return buyer, report
@@ -1048,6 +1249,12 @@ def main() -> int:
         default=180,
         help="soft total runtime budget; remaining buyers are skipped after this limit",
     )
+    parser.add_argument(
+        "--per-buyer-seconds",
+        type=int,
+        default=35,
+        help="hard asset-fetch time limit per buyer; timed-out buyers continue without assets",
+    )
     args = parser.parse_args()
 
     buyers_path = Path(args.buyers)
@@ -1079,14 +1286,19 @@ def main() -> int:
                 "notes": ["skipped:asset_fetch_time_budget_exceeded"],
             })
             continue
-        buyer, report = process_buyer(
-            dict(item),
-            assets_dir,
-            cache,
-            args.enable_ai_visual_fallback,
-            args.asset_mode,
-            args.browser_timeout_ms,
-        )
+        global FETCH_DEADLINE
+        FETCH_DEADLINE = time.monotonic() + max(10, int(args.per_buyer_seconds))
+        try:
+            buyer, report = process_buyer(
+                dict(item),
+                assets_dir,
+                cache,
+                args.enable_ai_visual_fallback,
+                args.asset_mode,
+                args.browser_timeout_ms,
+            )
+        finally:
+            FETCH_DEADLINE = None
         report["elapsed_seconds"] = round(time.monotonic() - started, 2)
         enriched.append(buyer)
         report_items.append(report)

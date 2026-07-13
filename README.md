@@ -275,11 +275,13 @@ The report checks:
 - Playwright and Chromium runtime
 - PowerPoint COM automation
 
-If Python `urllib` requests are blocked but `curl` works, enable:
+Python requests now fall back to the system `curl` executable automatically when available. To force the old behavior, set:
 
 ```powershell
-$env:BUYER_BOARD_ENABLE_CURL_FALLBACK="1"
+$env:BUYER_BOARD_DISABLE_CURL_FALLBACK="1"
 ```
+
+Asset mode is intentionally staged: `auto` uses lightweight HTML parsing first, extracts real inline header SVG logos, and only enables the Playwright path when `$env:BUYER_BOARD_ENABLE_BROWSER_FALLBACK="1"` is explicitly set. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
 
 ## Buyer asset recovery
 
@@ -320,7 +322,9 @@ Depending on the workflow, the workspace may contain:
 - Arbitrary PPT templates still require first-run decomposition and mapping verification.
 - The generic runner supports common shape, table, placeholder, repeated-slide, and image-slot patterns; unusual animations, SmartArt, charts, and complex grouped objects may still need a custom filler.
 - Public website asset fetching is best-effort and depends on local network permissions.
-- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight.
+- Logo selection rejects certification seals, government badges, banners, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
+- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight. Enable it only for sites whose light HTML pass reports a missing asset.
+- `asset_fetch_report.json` records `logo_confidence`, `logo_source`, `logo_url`, rejected candidates, and timeout/network notes for manual review.
 - AI right-side visual fallback is opt-in and does not generate logos.
 - When no verified image is available, the workflow should clear risky stale placeholders rather than inventing fake brand assets.
 

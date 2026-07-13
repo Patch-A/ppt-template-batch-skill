@@ -1003,7 +1003,9 @@ async function runResearch() {
         },
         fetch_assets: $("#fetch-assets").checked,
         enable_ai_visual_fallback: $("#fetch-assets").checked && $("#ai-visual-fallback").checked,
-        asset_mode: "light"
+        // Light parsing is attempted first; the backend switches to browser
+        // DOM extraction only when Logo or product imagery is still missing.
+        asset_mode: "auto"
       })
     });
     pollResearch(job.id);

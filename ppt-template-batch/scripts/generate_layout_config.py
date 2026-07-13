@@ -239,6 +239,7 @@ def build_content_config(presentation: Presentation) -> tuple[dict[str, Any], li
         "title_shape_index": title_shape_index,
         "table_shape_index": table_shape_index,
         "fields": fields,
+        "preserve_title": True,
         "preserve_footer": True,
     }
     if footer_shape_index is not None:

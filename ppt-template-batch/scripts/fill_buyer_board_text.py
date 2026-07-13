@@ -138,6 +138,7 @@ def fill_content_slides(
     table_shape_index = content_config["table_shape_index"]
     title_shape_index = content_config["title_shape_index"]
     fields = content_config["fields"]
+    preserve_title = content_config.get("preserve_title", True)
 
     available_content_slides = len(presentation.slides) - start_slide_index + 1
     if len(buyers) > available_content_slides:
@@ -147,7 +148,8 @@ def fill_content_slides(
 
     for offset, buyer in enumerate(buyers):
         slide = presentation.slides[start_slide_index - 1 + offset]
-        set_shape_text(slide, title_shape_index, content_title)
+        if not preserve_title:
+            set_shape_text(slide, title_shape_index, content_title)
 
         table = get_shape(slide, table_shape_index).table
         for field in fields:

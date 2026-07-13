@@ -95,7 +95,9 @@ def build_report() -> dict[str, object]:
         "platform": platform.platform(),
         "openai_api_key_visible": bool(get_env_var("OPENAI_API_KEY")),
         "buyer_research_model": get_env_var("BUYER_RESEARCH_MODEL") or "gpt-4.1",
-        "curl_fallback_enabled": bool(get_env_var("BUYER_BOARD_ENABLE_CURL_FALLBACK")),
+        "curl_fallback_enabled": not bool(get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK")),
+        "curl_fallback_mode": "disabled" if get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK") else "automatic_after_python_failure",
+        "browser_fallback_enabled": bool(get_env_var("BUYER_BOARD_ENABLE_BROWSER_FALLBACK")),
         "modules": [check_module(name) for name in ("openai", "pptx", "PIL", "cairosvg", "playwright")],
         "network": [
             check_url("https://www.scatec.com"),

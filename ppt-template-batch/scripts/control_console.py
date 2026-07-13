@@ -22,7 +22,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from discover_buyer_profiles import normalize_products, pad_or_trim_bio
+from discover_buyer_profiles import normalize_products, pad_or_trim_bio, refine_buyer_products
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -1158,6 +1158,11 @@ class ConsoleState:
         country_line = f"国家：{country}" if country else ""
         current = read_json(paths["layout"]) if paths["layout"].is_file() else {}
         if is_buyer_layout(current):
+            current.setdefault("content", {})
+            # Existing buyer-board configs predate the fixed-header rule.
+            # Preserve the template's content-page header unless a user
+            # explicitly opts into replacing it in layout-config.json.
+            current["content"].setdefault("preserve_title", True)
             current.setdefault("defaults", {})
             current["defaults"].update({
                 "cover_title": title,
@@ -1231,7 +1236,11 @@ class ConsoleState:
                     item[score_key] = 0
             item["country"] = item["country"] or default_country
             if enforce_research_copy_rules:
-                item["products"] = normalize_products(item["products"], procurement_need)
+                item["products"] = refine_buyer_products(
+                    item["products"],
+                    procurement_need,
+                    " ".join(str(item.get(key, "") or "") for key in ("bio", "demand_scenarios", "research_notes", "evidence")),
+                )
                 item["bio"] = pad_or_trim_bio(item["bio"])
             if not item["name"]:
                 warnings.append(f"第{index}家买家缺少企业名称。")
