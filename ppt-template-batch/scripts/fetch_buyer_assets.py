@@ -742,12 +742,19 @@ def render_page(
 ) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str], list[str]]:
     notes: list[str] = []
     try:
-        page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        remaining = remaining_fetch_milliseconds()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("asset_fetch_per_buyer_timeout")
+        effective_timeout = min(timeout_ms, max(500, remaining or timeout_ms))
+        page.goto(target_url, wait_until="domcontentloaded", timeout=effective_timeout)
         try:
-            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 4000))
+            page.wait_for_load_state("networkidle", timeout=min(effective_timeout, 4000))
         except Exception:
             notes.append(f"browser_networkidle_timeout:{target_url}")
-        page.wait_for_timeout(BROWSER_WAIT_MS)
+        remaining = remaining_fetch_milliseconds()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("asset_fetch_per_buyer_timeout")
+        page.wait_for_timeout(min(BROWSER_WAIT_MS, remaining or BROWSER_WAIT_MS))
         final_url = str(page.url)
         html = page.content()
         logo_candidates, visual_candidates, page_urls = parse_page(final_url, html, origin=origin)
@@ -1075,6 +1082,12 @@ def display_asset_source(src: str, page: str = "") -> str:
     if src.startswith("data:image/svg+xml;base64,"):
         return f"inline-svg:{page}" if page else "inline-svg"
     return src if len(src) <= 240 else src[:237] + "..."
+
+
+def remaining_fetch_milliseconds() -> int | None:
+    if FETCH_DEADLINE is None:
+        return None
+    return max(0, int((FETCH_DEADLINE - time.monotonic()) * 1000))
 
 
 def process_buyer(
