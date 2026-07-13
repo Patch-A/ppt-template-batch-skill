@@ -38,6 +38,11 @@ python scripts/control_console.py
 ~~~
 
 Keep the existing native PPTX template pipeline as the export engine. Use the console for preset selection, form entry, buyer research, session-only provider/model configuration, upstream model-list fetching, inspection, export, and run reporting. Treat Generic PPT as the default project type; use Buyer Board and Buyer Briefing only as presets.
+
+## Portable agent package
+
+For Feishu/Aily or another agent with native search and image capabilities, use the repository-level `feishu-agent-skill/` entrypoint. It is intentionally provider-neutral and does not ask the user for a model API Key. Build the ZIP with `scripts/build_feishu_agent_skill.py`; the package includes this engine and its instructions while excluding local outputs and private samples.
+
 ## Workflow
 
 ### 1. Identify the template family

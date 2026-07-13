@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["template"],
+  "properties": {
+    "template": {"description": "用户上传的 PPTX/PPT 模板", "type": "string"},
+    "mode": {"enum": ["generic", "buyer_board", "buyer_briefing"]},
+    "country": {"type": "string"},
+    "procurement_need": {"type": "string"},
+    "buyer_count": {"type": "integer", "minimum": 1, "maximum": 100},
+    "records": {"type": ["object", "array"]},
+    "allow_page_expand": {"type": "boolean", "default": true},
+    "need_images": {"type": "boolean", "default": true}
+  },
+  "additionalProperties": true
+}

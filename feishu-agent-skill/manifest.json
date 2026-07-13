@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "ppt-template-batch-agent",
+  "display_name": "通用PPT模板批处理",
+  "version": "0.5.0",
+  "entrypoint": "SKILL.md",
+  "runtime": "agent",
+  "requires_api_key": false,
+  "native_capabilities": ["file_upload", "web_search", "image_search", "image_generation", "pptx_file"],
+  "input": {
+    "template": "pptx upload",
+    "mode": ["generic", "buyer_board", "buyer_briefing"],
+    "country": "string, optional",
+    "procurement_need": "string, optional",
+    "buyer_count": "integer, optional",
+    "records": "object or array, optional",
+    "allow_page_expand": "boolean, optional",
+    "need_images": "boolean, optional"
+  },
+  "output": ["finished.pptx", "layout-config.json", "fill-report.json", "sources.json"]
+}

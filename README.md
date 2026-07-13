@@ -95,6 +95,16 @@ The console does not require API keys for every project. API keys are only neede
 
 Buyer research defaults to `model_only`, which uses OpenAI-compatible `/chat/completions` and works with DeepSeek, Qwen, GLM, Kimi, SiliconFlow, OpenRouter, Ollama, LM Studio, and custom compatible endpoints. OpenAI built-in web search is an explicit opt-in mode, not the default.
 
+### Feishu/Aily agent skill package
+
+The `feishu-agent-skill/` folder is a portable agent-facing entrypoint for Feishu bots, Aily, and other agents that support Markdown skills. It uses the agent's native web search, image search, and image-generation abilities, so users do not need to enter a model API Key. Build a self-contained ZIP with the deterministic PPT engine included:
+
+```powershell
+python scripts/build_feishu_agent_skill.py --output output/ppt-template-batch-agent-skill.zip
+```
+
+Import the generated ZIP through the agent's local skill upload flow. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order.
+
 ## Supported modes
 
 ### Generic PPT batch mode
