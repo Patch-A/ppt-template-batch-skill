@@ -9,8 +9,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "feishu-agent-skill"
-ENGINE_ROOT = REPO_ROOT / "ppt-template-batch"
-TOP_LEVEL_SCRIPTS = REPO_ROOT / "scripts"
 
 
 def ignored(relative: Path) -> bool:
@@ -43,33 +41,19 @@ def copy_filtered(source: Path, destination: Path) -> int:
 
 
 def build(output: Path) -> Path:
-    if not PACKAGE_ROOT.is_dir() or not ENGINE_ROOT.is_dir():
-        raise FileNotFoundError("feishu-agent-skill or ppt-template-batch directory is missing.")
+    if not PACKAGE_ROOT.is_dir():
+        raise FileNotFoundError("feishu-agent-skill directory is missing.")
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="ppt-agent-skill-") as temp_dir:
         staging = Path(temp_dir) / "ppt-template-batch-agent-skill"
         staging.mkdir()
         package_files = copy_filtered(PACKAGE_ROOT, staging)
-        engine = staging / "engine"
-        engine_files = copy_filtered(ENGINE_ROOT, engine / "ppt-template-batch")
-        wrapper_files = copy_filtered(TOP_LEVEL_SCRIPTS, engine / "scripts")
-        requirements = REPO_ROOT / "requirements.txt"
-        if requirements.is_file():
-            shutil.copy2(requirements, engine / "requirements.txt")
-        manifest = staging / "manifest.json"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace(
-                '\"runtime\": \"agent\"',
-                '\"runtime\": \"agent\", \"engine_root\": \"engine\"',
-            ),
-            encoding="utf-8",
-        )
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for item in staging.rglob("*"):
                 if item.is_file():
-                    archive.write(item, Path(staging.name) / item.relative_to(staging))
-        print(f"Packaged {package_files + engine_files + wrapper_files} files: {output}")
+                    archive.write(item, item.relative_to(staging))
+        print(f"Packaged {package_files} Aily-compatible files: {output}")
     return output
 
 

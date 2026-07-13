@@ -1,5 +1,11 @@
 # Agent Runtime Rules
 
+## Aily 兼容边界
+
+该目录本身就是 Aily/飞书智能体 skill 根目录：根目录必须有 SKILL.md，其他内容只使用 references/ 下的 Markdown 和 JSON。不要要求 skillhub 识别 manifest.json、engine/、requirements.txt 或 Codex 专用目录。
+
+飞书/Aily 直接使用原生幻灯片能力完成 PPT 创建、复制页面、放置图片和导出。该运行路径不安装 Python、python-pptx、Playwright、OpenAI SDK，也不需要任何模型 API Key。仓库中的 Python/PPTX 脚本只服务于桌面版，不是 Aily skill 的启动依赖。
+
 ## 任务识别
 
 从用户请求提取 template、mode、country、procurement_need、buyer_count、records 和 allow_page_expand。如果没有 mode，根据模板和用户描述判断：一页一个企业用 buyer_board，一页 6 个企业用 buyer_briefing，其他情况用 generic。

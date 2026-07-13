@@ -41,7 +41,7 @@ Keep the existing native PPTX template pipeline as the export engine. Use the co
 
 ## Portable agent package
 
-For Feishu/Aily or another agent with native search and image capabilities, use the repository-level `feishu-agent-skill/` entrypoint. It is intentionally provider-neutral and does not ask the user for a model API Key. Build the ZIP with `scripts/build_feishu_agent_skill.py`; the package includes this engine and its instructions while excluding local outputs and private samples.
+For Feishu/Aily or another agent with native search, image, and slide capabilities, use the repository-level `feishu-agent-skill/` entrypoint. It is intentionally provider-neutral and does not ask the user for a model API Key or local Python dependencies. Build the Aily-compatible ZIP with `scripts/build_feishu_agent_skill.py`; the package contains a root-level SKILL.md and references/ only. Keep the desktop Python/PPTX engine separate for local runs.
 
 ## Workflow
 

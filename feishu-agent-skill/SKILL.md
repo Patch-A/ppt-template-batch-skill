@@ -1,6 +1,6 @@
 ---
 name: ppt-template-batch-agent
-description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PPTX 模板和结构化或自然语言内容，先拆解模板与固定元素，再按字段映射填充、检索企业资料、筛选或生成图片、批量复制页面并导出 PPTX。适用于飞书智能体、Aily 以及其他支持 Markdown skill 的 agent，不要求用户提供模型 API Key。
+description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PPTX 模板和结构化或自然语言内容，先拆解模板与固定元素，再按字段映射填充、检索企业资料、筛选或生成图片、批量复制页面并导出 PPTX。适用于飞书智能体、Aily 以及其他支持根目录 SKILL.md 的 agent，不要求用户安装 Python 或提供模型 API Key。
 ---
 
 # 通用 PPT 模板批处理智能体
@@ -59,4 +59,4 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 - fill-report.json：记录页数、字段缺失、溢出、乱码和图片越界检查结果。
 - sources.json：记录企业资料、Logo、产品图和生图提示词的来源或状态。
 
-详细输入字段、图片筛选和失败处理规则见 references/agent-runtime.md。如果使用本仓库中的确定性 PPT 引擎，调用打包后的 engine/scripts/run_ppt_batch_pipeline.py 或对应买家预设脚本。
+详细输入字段、图片筛选和失败处理规则见 references/agent-runtime.md。飞书/Aily 版本优先使用平台原生幻灯片创建、编辑和导出能力；不要寻找 engine/ 目录、requirements.txt 或远程模型 CLI。桌面端需要可重复脚本时，再使用仓库根目录中的确定性 PPT 引擎。

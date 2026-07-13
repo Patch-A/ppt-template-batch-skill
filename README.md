@@ -97,13 +97,13 @@ Buyer research defaults to `model_only`, which uses OpenAI-compatible `/chat/com
 
 ### Feishu/Aily agent skill package
 
-The `feishu-agent-skill/` folder is a portable agent-facing entrypoint for Feishu bots, Aily, and other agents that support Markdown skills. It uses the agent's native web search, image search, and image-generation abilities, so users do not need to enter a model API Key. Build a self-contained ZIP with the deterministic PPT engine included:
+The `feishu-agent-skill/` folder is a portable Aily-compatible skill root for Feishu bots and other agents that support a root-level SKILL.md. It uses the agent's native web search, image search, native slide editing, and image-generation abilities, so users do not need to enter a model API Key or install Python dependencies. The ZIP intentionally contains only SKILL.md and references/ files:
 
 ```powershell
 python scripts/build_feishu_agent_skill.py --output output/ppt-template-batch-agent-skill.zip
 ```
 
-Import the generated ZIP through the agent's local skill upload flow. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order.
+Import the generated ZIP through Aily's local skill upload flow. Do not unpack it into a parent folder or require manifest.json/engine/. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order. The desktop Python/PPTX engine remains available from the repository root for local runs.
 
 ## Supported modes
 
