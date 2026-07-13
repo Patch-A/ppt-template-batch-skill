@@ -36,6 +36,8 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 
 当用户只提供“国家 + 采购需求”时，默认使用 buyer_board，先搜索并核验买家，再填入模板。用户提供已有买家资料时，不重复编造资料，先做字段整理和真实性风险标记。
 
+在飞书/Aily 中执行 buyer_board 时，先用智能体原生搜索生成并核验 buyers 数据，再把已整理的 buyers.json 交给 engine/scripts/run_buyer_board_pipeline.py 的已有数据模式。不要调用需要远程模型 Key 的自动检索 CLI。
+
 ## 三种模式
 
 - generic：任何产品目录、公司介绍、报告、报价单、培训材料和重复卡片模板。
