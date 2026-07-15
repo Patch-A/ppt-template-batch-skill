@@ -134,6 +134,15 @@ If no asset is available:
 - is the right-side image visually filled and balanced when present
 - were placeholder graphics removed when no image asset was available
 - was the text-only draft used as input, rather than a previously exported final deck
+
+## Regression safeguards
+
+- Clear every existing text run before writing replacement text. Replacing only `runs[0]` leaves the remaining template text in the cell and produces mixed old/new content.
+- Apply dynamic heights after text filling. Use actual wrapped line count and available width; keep identity rows and fixed footer geometry unchanged.
+- When the template has too few content pages, duplicate a complete content slide, including its table, images, decorations, relationships, and registered slide metadata. A new blank-layout slide is not an equivalent replacement.
+- After export, scan every table cell and text shape for known template keywords and inspect the rendered previews for clipping, overflow, stale graphics, and unexpected blank areas.
+
+The incident-level record and reusable repair examples are in `../../feishu-agent-skill/references/buyer-board-workflow-changelog.md`.
 ## Model API boundaries
 
 - Buyer research and verification require the research model API key only when the buyer-research capability is enabled.
