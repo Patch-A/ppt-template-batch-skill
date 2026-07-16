@@ -40,6 +40,7 @@ Choose the local presentation engine, validate required data and mappings, then 
 - `ppt-template-batch/`: the Codex skill package.
 - `ppt-template-batch/scripts/`: reusable PPT decomposition, text filling, image placement, diagnostics, and buyer preset scripts.
 - `ppt-template-batch/references/`: workflow rules for generic PPT batch processing and buyer-specific presets.
+- `yitu-quanjie/`: the optional "一图全解" exhibition-poster preset and its replacement script.
 - `scripts/run_ppt_batch_pipeline.py`: generic one-click pipeline for config-driven PPT filling.
 - `scripts/run_control_console.py`: local browser control console for project setup, editing, and export.
 - `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
@@ -106,6 +107,12 @@ python scripts/build_feishu_agent_skill.py --output output/ppt-template-batch-ag
 Import the generated ZIP through Aily's local skill upload flow. Do not unpack it into a parent folder or require manifest.json/engine/. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order. The desktop Python/PPTX engine remains available from the repository root for local runs.
 
 Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-agent-skill/references/buyer-board-workflow-changelog.md`](feishu-agent-skill/references/buyer-board-workflow-changelog.md). The checklist covers stale multi-run text, dynamic content-row sizing, complete repeated-slide cloning, exact-enterprise Logo verification, and no-fabrication fallbacks.
+
+### 一图全解 preset
+
+Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.
+
+For deterministic local replacement, use `yitu-quanjie/scripts/yitu_quanjie_replace.py` with JSON mappings for shape names and optional table cells. It is separate from the buyer-board preset and does not change the generic PPT workflow.
 
 ## Supported modes
 
