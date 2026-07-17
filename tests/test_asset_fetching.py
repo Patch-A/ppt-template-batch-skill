@@ -248,7 +248,7 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
     def test_validate_asset_url_resolves_hostnames_and_rejects_non_public_answers(self):
         dns_answers = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443)),
         ]
 
@@ -344,6 +344,107 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "response_too_large"):
                 self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png", max_bytes=5)
+
+    def test_curl_pins_hostname_to_validated_public_ip(self):
+        commands = []
+
+        def run_curl(command, **kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=b"https://acme.com/logo.png\n200\nimage/png\n",
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers), patch("subprocess.run", side_effect=run_curl):
+            final_url, body, content_type = self.fetch_buyer_assets.fetch_url_with_curl(
+                "https://acme.com/logo.png"
+            )
+
+        self.assertEqual(final_url, "https://acme.com/logo.png")
+        self.assertEqual(body, b"logo")
+        self.assertEqual(content_type, "image/png")
+        self.assertIn("--resolve", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--resolve") + 1], "acme.com:443:93.184.216.34")
+
+    def test_curl_pins_ipv6_hostname_with_bracketed_resolve_address(self):
+        commands = []
+
+        def run_curl(command, **kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=b"https://acme.com/logo.png\n200\nimage/png\n",
+            )
+
+        dns_answers = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:4700::1111", 443, 0, 0))
+        ]
+        with patch("socket.getaddrinfo", return_value=dns_answers), patch("subprocess.run", side_effect=run_curl):
+            self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+
+        self.assertEqual(
+            commands[0][commands[0].index("--resolve") + 1],
+            "acme.com:443:[2606:4700:4700::1111]",
+        )
+
+    def test_curl_rejects_localhost_redirect_before_second_connection(self):
+        commands = []
+
+        def run_curl(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=(
+                    b"https://acme.com/logo.png\n302\ntext/html\n"
+                    b"http://localhost/internal-logo.png"
+                ),
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers), patch("subprocess.run", side_effect=run_curl):
+            with self.assertRaisesRegex(ValueError, "local_host"):
+                self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("-L", commands[0])
+
+    def test_curl_allows_public_same_site_cdn_redirect_with_pinned_connections(self):
+        commands = []
+
+        def resolve(host, *_args):
+            answers = {
+                "acme.com": "93.184.216.34",
+                "cdn.acme.com": "1.1.1.1",
+            }
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answers[host], 443))]
+
+        def run_curl(command, **kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"cdn-logo")
+            if len(commands) == 1:
+                stdout = b"https://acme.com/logo.png\n302\ntext/html\nhttps://cdn.acme.com/logo.png"
+            else:
+                stdout = b"https://cdn.acme.com/logo.png\n200\nimage/png\n"
+            return SimpleNamespace(returncode=0, stderr=b"", stdout=stdout)
+
+        with patch("socket.getaddrinfo", side_effect=resolve), patch("subprocess.run", side_effect=run_curl):
+            final_url, body, content_type = self.fetch_buyer_assets.fetch_url_with_curl(
+                "https://acme.com/logo.png",
+                base_host="www.acme.com",
+            )
+
+        self.assertEqual(final_url, "https://cdn.acme.com/logo.png")
+        self.assertEqual(body, b"cdn-logo")
+        self.assertEqual(content_type, "image/png")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0][commands[0].index("--resolve") + 1], "acme.com:443:93.184.216.34")
+        self.assertEqual(commands[1][commands[1].index("--resolve") + 1], "cdn.acme.com:443:1.1.1.1")
 
     def test_logo_rejection_reason_uses_boundary_matching_and_not_page_url(self):
         candidate = self.AssetCandidate(

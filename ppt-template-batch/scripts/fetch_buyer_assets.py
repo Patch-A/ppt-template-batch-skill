@@ -16,7 +16,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, unquote_to_bytes, urljoin, urlparse
-from urllib.request import Request, urlopen
 
 from PIL import Image
 
@@ -94,6 +93,7 @@ BROWSER_VIEWPORT_HEIGHT = 1080
 BROWSER_WAIT_MS = 1200
 BROWSER_PAGE_LIMIT = 6
 FETCH_TIMEOUT_SECONDS = 8
+MAX_REDIRECT_HOPS = 5
 ASSET_LOGIC_VERSION = 4
 LOGO_MIN_SCORE = 10
 FETCH_DEADLINE: float | None = None
@@ -172,51 +172,62 @@ def _same_site_host(observed: str, expected: str) -> bool:
     return observed == expected or observed.endswith(f".{expected}")
 
 
-def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
+def _validate_and_resolve_asset_url(
+    url: str,
+    base_host: str = "",
+) -> tuple[bool, str, str, int, str]:
     try:
         parsed = urlparse(url)
         parsed_hostname = parsed.hostname
+        port = parsed.port
     except Exception:
-        return False, "invalid_url"
+        return False, "invalid_url", "", 0, ""
     if parsed.scheme.lower() not in {"http", "https"}:
-        return False, "invalid_scheme"
+        return False, "invalid_scheme", "", 0, ""
     if not parsed_hostname:
-        return False, "invalid_host"
+        return False, "invalid_host", "", 0, ""
     host = parsed_hostname.strip().strip("[]").lower().rstrip(".")
+    port = port or (443 if parsed.scheme.lower() == "https" else 80)
     if host == "localhost" or host.endswith(".localhost"):
-        return False, "local_host"
+        return False, "local_host", "", 0, ""
     try:
         address = _parse_ip_literal(host)
     except ValueError:
         if _looks_like_ip_literal(host):
-            return False, "invalid_ip_literal"
+            return False, "invalid_ip_literal", "", 0, ""
         address = None
     if address and not _is_public_address(address):
-        return False, "non_public_ip"
+        return False, "non_public_ip", "", 0, ""
     if base_host:
         expected = _hostname_without_www(urlparse(base_host if "://" in base_host else f"//{base_host}").hostname or base_host)
         observed = _hostname_without_www(parsed_hostname)
         if not _same_site_host(observed, expected):
-            return False, "different_host"
+            return False, "different_host", "", 0, ""
     if address is None:
         try:
             resolved = socket.getaddrinfo(host, None)
         except OSError:
-            return False, "host_resolution_failed"
+            return False, "host_resolution_failed", "", 0, ""
         resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-        for item in resolved:
-            sockaddr = item[4]
-            if not sockaddr:
-                continue
-            try:
+        try:
+            for item in resolved:
+                sockaddr = item[4]
+                if not sockaddr:
+                    continue
                 resolved_addresses.append(ipaddress.ip_address(sockaddr[0]))
-            except ValueError:
-                return False, "host_resolution_failed"
+        except (IndexError, TypeError, ValueError):
+            return False, "host_resolution_failed", "", 0, ""
         if not resolved_addresses:
-            return False, "host_resolution_failed"
+            return False, "host_resolution_failed", "", 0, ""
         if any(not _is_public_address(item) for item in resolved_addresses):
-            return False, "non_public_ip"
-    return True, ""
+            return False, "non_public_ip", "", 0, ""
+        return True, "", host, port, str(resolved_addresses[0])
+    return True, "", host, port, ""
+
+
+def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
+    valid, reason, _, _, _ = _validate_and_resolve_asset_url(url, base_host=base_host)
+    return valid, reason
 
 
 def read_response_limited(response: Any, max_bytes: int) -> bytes:
@@ -289,35 +300,7 @@ def fetch_url(
     max_bytes: int = MAX_RESPONSE_BYTES,
     base_host: str = "",
 ) -> tuple[str, bytes, str]:
-    valid, reason = validate_asset_url(url, base_host=base_host)
-    if not valid:
-        raise ValueError(reason)
-    timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
-    if FETCH_DEADLINE is not None:
-        remaining = FETCH_DEADLINE - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        timeout = max(1, min(timeout, int(remaining)))
-    request = Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            content_type = response.headers.get_content_type()
-            final_url = response.geturl()
-            valid, reason = validate_asset_url(final_url, base_host=base_host)
-            if not valid:
-                raise ValueError(reason)
-            body = read_response_limited(response, max_bytes)
-        return final_url, body, content_type
-    except Exception as urllib_exc:
-        # Windows security software can block Python's socket while the native
-        # curl executable is still allowed. Keep the fallback automatic so an
-        # asset fetch does not depend on an undocumented environment switch.
-        if get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK"):
-            raise
-        try:
-            return fetch_url_with_curl(url, timeout, max_bytes, base_host=base_host)
-        except Exception:
-            raise urllib_exc
+    return fetch_url_with_curl(url, timeout, max_bytes, base_host=base_host)
 
 
 def fetch_url_with_curl(
@@ -326,9 +309,6 @@ def fetch_url_with_curl(
     max_bytes: int = MAX_RESPONSE_BYTES,
     base_host: str = "",
 ) -> tuple[str, bytes, str]:
-    valid, reason = validate_asset_url(url, base_host=base_host)
-    if not valid:
-        raise ValueError(reason)
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
     if FETCH_DEADLINE is not None:
         remaining = FETCH_DEADLINE - time.monotonic()
@@ -337,12 +317,19 @@ def fetch_url_with_curl(
         timeout = max(1, min(timeout, int(remaining)))
     import subprocess
 
+    redirect_base_host = base_host or (urlparse(url).hostname or "")
+    current_url = url
     with tempfile.TemporaryDirectory() as temp_dir:
         body_path = Path(temp_dir) / "body"
-        result = subprocess.run(
-            [
+        for hop in range(MAX_REDIRECT_HOPS + 1):
+            valid, reason, host, port, pinned_ip = _validate_and_resolve_asset_url(
+                current_url,
+                base_host=redirect_base_host,
+            )
+            if not valid:
+                raise ValueError(reason)
+            command = [
                 "curl",
-                "-L",
                 "--silent",
                 "--show-error",
                 "--max-time",
@@ -354,28 +341,41 @@ def fetch_url_with_curl(
                 "-o",
                 str(body_path),
                 "-w",
-                "%{url_effective}\n%{content_type}",
-                url,
-            ],
+                "%{url_effective}\n%{http_code}\n%{content_type}\n%{redirect_url}",
+            ]
+            if pinned_ip:
+                resolve_ip = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+                command.extend(["--resolve", f"{host}:{port}:{resolve_ip}"])
+            command.append(current_url)
+            result = subprocess.run(
+                command,
                 capture_output=True,
                 timeout=timeout + 2,
-        )
-        if result.returncode == 63:
-            raise ValueError("response_too_large")
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
-        metadata = result.stdout.decode("utf-8", errors="replace").splitlines()
-        if len(metadata) < 2:
-            raise RuntimeError("curl response did not include metadata")
-        final_url = metadata[-2].strip() or url
-        valid, reason = validate_asset_url(final_url, base_host=base_host)
-        if not valid:
-            raise ValueError(reason)
-        content_type = metadata[-1].split(";")[0].strip() or "application/octet-stream"
-        if body_path.stat().st_size > max_bytes:
-            raise ValueError("response_too_large")
-        body = body_path.read_bytes()
-    return final_url, body, content_type
+            )
+            if result.returncode == 63:
+                raise ValueError("response_too_large")
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+            metadata = result.stdout.decode("utf-8", errors="replace").split("\n", 3)
+            if len(metadata) < 4:
+                raise RuntimeError("curl response did not include metadata")
+            final_url = metadata[0].strip() or current_url
+            try:
+                status_code = int(metadata[1].strip())
+            except ValueError as exc:
+                raise RuntimeError("curl response did not include a status code") from exc
+            content_type = metadata[2].split(";")[0].strip() or "application/octet-stream"
+            redirect_url = metadata[3].strip()
+            if 300 <= status_code < 400 and redirect_url:
+                if hop >= MAX_REDIRECT_HOPS:
+                    raise ValueError("too_many_redirects")
+                current_url = urljoin(current_url, redirect_url)
+                continue
+            if body_path.stat().st_size > max_bytes:
+                raise ValueError("response_too_large")
+            body = body_path.read_bytes()
+            return final_url, body, content_type
+    raise RuntimeError("curl redirect loop did not terminate")
 
 
 class AssetHTMLParser(HTMLParser):
