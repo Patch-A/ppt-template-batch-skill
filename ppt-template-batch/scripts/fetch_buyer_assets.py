@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import ipaddress
 import json
 import os
 import re
+import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, unquote_to_bytes, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from PIL import Image
@@ -80,6 +83,7 @@ MAX_PAGE_CANDIDATES = 10
 MIN_IMAGE_BYTES = 5 * 1024
 MIN_LOGO_BYTES = 512
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_RESPONSE_BYTES = MAX_IMAGE_BYTES
 MIN_VISUAL_WIDTH = 240
 MIN_VISUAL_HEIGHT = 140
 MIN_LOGO_WIDTH = 60
@@ -124,7 +128,98 @@ def candidate_base_urls(domain: str) -> list[str]:
     return [f"https://{clean}", f"http://{clean}"]
 
 
-def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
+def _hostname_without_www(hostname: str) -> str:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "invalid_url"
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False, "invalid_scheme"
+    if not parsed.hostname:
+        return False, "invalid_host"
+    host = parsed.hostname.strip().strip("[]").lower()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address and (address.is_private or address.is_loopback or address.is_link_local):
+        return False, "private_network_target"
+    if base_host:
+        expected = _hostname_without_www(urlparse(base_host if "://" in base_host else f"//{base_host}").hostname or base_host)
+        observed = _hostname_without_www(parsed.hostname)
+        if expected and observed != expected:
+            return False, "different_host"
+    return True, ""
+
+
+def read_response_limited(response: Any, max_bytes: int) -> bytes:
+    length_header = ""
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            length_header = str(headers.get("Content-Length") or headers.get("content-length") or "")
+        except Exception:
+            length_header = ""
+    if length_header:
+        try:
+            if int(length_header) > max_bytes:
+                raise ValueError("response_too_large")
+        except ValueError as exc:
+            if str(exc) == "response_too_large":
+                raise
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(64 * 1024, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("response_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def decode_data_uri_limited(src: str, max_bytes: int) -> tuple[bytes, str]:
+    if not src.startswith("data:") or "," not in src:
+        raise ValueError("invalid_data_uri")
+    header, payload = src.split(",", 1)
+    content_type = header[5:].split(";", 1)[0] or "text/plain"
+    if ";base64" in header.lower():
+        compact = "".join(payload.split())
+        padding = compact.count("=")
+        decoded_estimate = (len(compact) * 3) // 4 - padding
+        if decoded_estimate > max_bytes:
+            raise ValueError("response_too_large")
+        try:
+            body = base64.b64decode(compact, validate=True)
+        except binascii.Error as exc:
+            raise ValueError("invalid_data_uri") from exc
+    else:
+        if len(payload) > max_bytes * 3:
+            raise ValueError("response_too_large")
+        body = unquote_to_bytes(payload)
+    if len(body) > max_bytes:
+        raise ValueError("response_too_large")
+    return body, content_type
+
+
+def fetch_url(
+    url: str,
+    timeout: int | None = None,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+    base_host: str = "",
+) -> tuple[str, bytes, str]:
+    valid, reason = validate_asset_url(url, base_host=base_host)
+    if not valid:
+        raise ValueError(reason)
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
     if FETCH_DEADLINE is not None:
         remaining = FETCH_DEADLINE - time.monotonic()
@@ -136,7 +231,10 @@ def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
         with urlopen(request, timeout=timeout) as response:
             content_type = response.headers.get_content_type()
             final_url = response.geturl()
-            body = response.read()
+            valid, reason = validate_asset_url(final_url, base_host=base_host)
+            if not valid:
+                raise ValueError(reason)
+            body = read_response_limited(response, max_bytes)
         return final_url, body, content_type
     except Exception as urllib_exc:
         # Windows security software can block Python's socket while the native
@@ -145,12 +243,20 @@ def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
         if get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK"):
             raise
         try:
-            return fetch_url_with_curl(url, timeout)
+            return fetch_url_with_curl(url, timeout, max_bytes, base_host=base_host)
         except Exception:
             raise urllib_exc
 
 
-def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
+def fetch_url_with_curl(
+    url: str,
+    timeout: int | None = None,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+    base_host: str = "",
+) -> tuple[str, bytes, str]:
+    valid, reason = validate_asset_url(url, base_host=base_host)
+    if not valid:
+        raise ValueError(reason)
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
     if FETCH_DEADLINE is not None:
         remaining = FETCH_DEADLINE - time.monotonic()
@@ -159,31 +265,42 @@ def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, byte
         timeout = max(1, min(timeout, int(remaining)))
     import subprocess
 
-    result = subprocess.run(
-        [
-            "curl",
-            "-L",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            str(timeout),
-            "-A",
-            USER_AGENT,
-            "-w",
-            "\n%{url_effective}\n%{content_type}",
-            url,
-        ],
-            capture_output=True,
-            timeout=timeout + 2,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
-    chunks = result.stdout.split(b"\n")
-    if len(chunks) < 3:
-        raise RuntimeError("curl response did not include metadata")
-    content_type = chunks[-1].decode("utf-8", errors="replace").split(";")[0].strip() or "application/octet-stream"
-    final_url = chunks[-2].decode("utf-8", errors="replace").strip() or url
-    body = b"\n".join(chunks[:-2])
+    with tempfile.TemporaryDirectory() as temp_dir:
+        body_path = Path(temp_dir) / "body"
+        result = subprocess.run(
+            [
+                "curl",
+                "-L",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                str(timeout),
+                "--max-filesize",
+                str(max_bytes),
+                "-A",
+                USER_AGENT,
+                "-o",
+                str(body_path),
+                "-w",
+                "%{url_effective}\n%{content_type}",
+                url,
+            ],
+                capture_output=True,
+                timeout=timeout + 2,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+        metadata = result.stdout.decode("utf-8", errors="replace").splitlines()
+        if len(metadata) < 2:
+            raise RuntimeError("curl response did not include metadata")
+        final_url = metadata[-2].strip() or url
+        valid, reason = validate_asset_url(final_url, base_host=base_host)
+        if not valid:
+            raise ValueError(reason)
+        content_type = metadata[-1].split(";")[0].strip() or "application/octet-stream"
+        if body_path.stat().st_size > max_bytes:
+            raise ValueError("response_too_large")
+        body = body_path.read_bytes()
     return final_url, body, content_type
 
 
@@ -306,6 +423,7 @@ def normalized_identity_tokens(*values: str) -> set[str]:
         "identity", "image", "images", "icon", "favicon", "header", "navbar", "assets",
         "asset", "static", "media", "content", "inline", "desktop", "mobile", "light", "dark",
         "blue", "green", "red", "white", "black", "primary", "secondary", "horizontal", "vertical",
+        "rgb", "color", "colour", "mark", "symbol", "new", "year",
         "png", "jpg", "jpeg", "svg", "webp", "gif", "ico", "cms", "api", "cdn", "src",
     }
     for value in values:
@@ -321,11 +439,16 @@ def logo_target(candidate: AssetCandidate) -> str:
     return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind, candidate.page]).lower()
 
 
+def logo_rejection_target(candidate: AssetCandidate) -> str:
+    return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind]).lower()
+
+
 def logo_rejection_reason(candidate: AssetCandidate) -> str:
-    target = logo_target(candidate)
+    target = logo_rejection_target(candidate)
     normalized = unicodedata.normalize("NFKD", target)
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    if any(hint in normalized for hint in LOGO_REJECT_HINTS):
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    if tokens.intersection(LOGO_REJECT_HINTS):
         return "non_brand_badge_or_banner_hint"
     return ""
 
@@ -1010,10 +1133,10 @@ def download_asset(candidate: AssetCandidate, output_path: Path, kind: str) -> t
     try:
         if candidate.src.startswith("data:image/svg+xml;base64,"):
             final_url = "inline-logo.svg"
-            body = base64.b64decode(candidate.src.split(",", 1)[1])
-            content_type = "image/svg+xml"
+            body, content_type = decode_data_uri_limited(candidate.src, MAX_IMAGE_BYTES)
         else:
-            final_url, body, content_type = fetch_url(candidate.src)
+            base_host = urlparse(candidate.page).hostname or ""
+            final_url, body, content_type = fetch_url(candidate.src, max_bytes=MAX_IMAGE_BYTES, base_host=base_host)
     except Exception as exc:
         return None, {"reason": f"download_failed:{exc.__class__.__name__}"}
     if not content_type.startswith("image/"):
@@ -1165,7 +1288,10 @@ def process_buyer(
     cached_logo = Path(str(cached.get("logo_path", ""))) if isinstance(cached, dict) and cached.get("logo_path") else None
     cached_site = Path(str(cached.get("site_image_path", ""))) if isinstance(cached, dict) and cached.get("site_image_path") else None
     cache_paths_exist = (cached_logo is None or cached_logo.is_file()) and (cached_site is None or cached_site.is_file())
-    if isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION and cache_paths_exist:
+    valid_cache = isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION and cache_paths_exist
+    cached_logo_present = valid_cache and cached_logo is not None and cached_logo.is_file()
+    cached_site_present = valid_cache and cached_site is not None and cached_site.is_file()
+    if valid_cache and cached_logo_present and cached_site_present:
         buyer["logo_path"] = cached.get("logo_path", "")
         buyer["site_image_path"] = cached.get("site_image_path", "")
         buyer["asset_fetch_notes"] = cached.get("asset_fetch_notes", "cache_hit")
@@ -1186,54 +1312,68 @@ def process_buyer(
     )
     slug = slugify(str(buyer.get("name", "buyer")))
 
-    logo_path = ""
-    logo_url = ""
-    logo_source = ""
+    logo_path = str(cached.get("logo_path", "")) if cached_logo_present else ""
+    logo_url = str(cached.get("logo_url", "")) if cached_logo_present else ""
+    logo_source = str(cached.get("logo_source", "")) if cached_logo_present else ""
+    logo_confidence_value = str(cached.get("logo_confidence", "missing")) if cached_logo_present else "missing"
     logo_score = 0
-    site_image_path = ""
-    site_source = ""
+    site_image_path = str(cached.get("site_image_path", "")) if cached_site_present else ""
+    site_source = str(cached.get("site_source", "")) if cached_site_present else ""
     trace = list(notes)
+    if cached_logo_present:
+        trace.append("cache_hit:logo")
+        report["logo_hit"] = True
+        report["logo_confidence"] = logo_confidence_value
+        report["logo_source"] = logo_source
+        report["logo_url"] = logo_url
+    if cached_site_present:
+        trace.append("cache_hit:site")
+        report["site_hit"] = True
+        report["site_source"] = site_source
     report["logo_rejected_candidates"] = [
         note for note in trace if note.startswith("logo_rejected_candidate:")
     ][:12]
     if final_url:
         trace.append(f"resolved:{final_url}")
 
-    for candidate in logo_candidates[:8]:
-        downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-logo", "logo")
-        trace.append(f"logo_try:{display_asset_source(candidate.src, candidate.page)}:score={candidate.score}:origin={candidate.origin}")
-        if not downloaded:
-            trace.append(f"logo_reject:{candidate.src}:{meta}")
-        if downloaded:
-            logo_path = str(downloaded)
-            logo_url = display_asset_source(candidate.src, candidate.page)
-            logo_source = candidate.origin
-            logo_score = candidate.score
-            trace.append(f"logo:{display_asset_source(candidate.src, candidate.page)}")
-            trace.append(f"logo_meta:{meta}")
-            report["logo_hit"] = True
-            report["logo_confidence"] = logo_confidence(candidate.score)
-            report["logo_source"] = candidate.origin
-            report["logo_url"] = candidate.src
-            break
+    if not logo_path:
+        for candidate in logo_candidates[:8]:
+            downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-logo", "logo")
+            trace.append(f"logo_try:{display_asset_source(candidate.src, candidate.page)}:score={candidate.score}:origin={candidate.origin}")
+            if not downloaded:
+                trace.append(f"logo_reject:{candidate.src}:{meta}")
+            if downloaded:
+                logo_path = str(downloaded)
+                logo_url = display_asset_source(candidate.src, candidate.page)
+                logo_source = candidate.origin
+                logo_score = candidate.score
+                logo_confidence_value = logo_confidence(candidate.score)
+                trace.append(f"logo:{display_asset_source(candidate.src, candidate.page)}")
+                trace.append(f"logo_meta:{meta}")
+                report["logo_hit"] = True
+                report["logo_confidence"] = logo_confidence_value
+                report["logo_source"] = candidate.origin
+                report["logo_url"] = candidate.src
+                break
 
-    for candidate in visual_candidates[:12]:
-        downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-site", "site")
-        trace.append(f"site_try:{candidate.src}:score={candidate.score}:origin={candidate.origin}")
-        if not downloaded:
-            trace.append(f"site_reject:{candidate.src}:{meta}")
-            continue
-        try:
-            prepared = prepare_site_image(downloaded, assets_dir, 1600, 900)
-            site_image_path = str(prepared.output_path)
-            site_source = candidate.origin
-            trace.append(f"site:{candidate.src}")
-            trace.append(f"site_meta:{meta}")
-            trace.append(f"site_prepare:{prepared.mode}:retention={prepared.retention}:upscale={prepared.upscale}")
-            report["site_hit"] = True
-            break
-        except Exception as exc:
-            trace.append(f"site_prepare_failed:{exc.__class__.__name__}")
+    if not site_image_path:
+        for candidate in visual_candidates[:12]:
+            downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-site", "site")
+            trace.append(f"site_try:{candidate.src}:score={candidate.score}:origin={candidate.origin}")
+            if not downloaded:
+                trace.append(f"site_reject:{candidate.src}:{meta}")
+                continue
+            try:
+                prepared = prepare_site_image(downloaded, assets_dir, 1600, 900)
+                site_image_path = str(prepared.output_path)
+                site_source = candidate.origin
+                trace.append(f"site:{candidate.src}")
+                trace.append(f"site_meta:{meta}")
+                trace.append(f"site_prepare:{prepared.mode}:retention={prepared.retention}:upscale={prepared.upscale}")
+                report["site_hit"] = True
+                break
+            except Exception as exc:
+                trace.append(f"site_prepare_failed:{exc.__class__.__name__}")
 
     if not site_image_path:
         ai_path, ai_note = maybe_generate_ai_visual(buyer, assets_dir, enable_ai_visual_fallback)
@@ -1258,13 +1398,13 @@ def process_buyer(
             "asset_logic_version": ASSET_LOGIC_VERSION,
             "logo_path": logo_path,
             "site_image_path": site_image_path,
-            "logo_confidence": logo_confidence(logo_score) if logo_path else "missing",
+            "logo_confidence": logo_confidence_value if logo_path else "missing",
             "logo_source": logo_source,
             "logo_url": logo_url,
             "site_source": site_source,
             "asset_fetch_notes": buyer["asset_fetch_notes"],
         }
-    report["logo_confidence"] = logo_confidence(logo_score) if logo_path else "missing"
+    report["logo_confidence"] = logo_confidence_value if logo_path else "missing"
     report["logo_source"] = logo_source
     report["logo_url"] = logo_url
     report["site_source"] = site_source
@@ -1335,9 +1475,14 @@ def main() -> int:
                 "name": skipped.get("name", ""),
                 "website": skipped.get("website", ""),
                 "logo_hit": False,
+                "logo_confidence": "missing",
+                "logo_source": "",
+                "logo_url": "",
+                "logo_rejected_candidates": [],
                 "site_hit": False,
                 "site_source": "",
                 "asset_mode": args.asset_mode,
+                "asset_logic_version": ASSET_LOGIC_VERSION,
                 "notes": ["skipped:asset_fetch_time_budget_exceeded"],
             })
             continue
