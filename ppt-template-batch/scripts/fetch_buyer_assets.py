@@ -330,6 +330,9 @@ def fetch_url_with_curl(
                 raise ValueError(reason)
             command = [
                 "curl",
+                "-q",
+                "--noproxy",
+                "*",
                 "--silent",
                 "--show-error",
                 "--max-time",
@@ -513,8 +516,14 @@ def logo_target(candidate: AssetCandidate) -> str:
     return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind, candidate.page]).lower()
 
 
+def candidate_resource_filename(candidate: AssetCandidate) -> str:
+    if candidate.src.startswith("data:image/"):
+        return ""
+    return Path(urlparse(candidate.src).path).name
+
+
 def logo_rejection_target(candidate: AssetCandidate) -> str:
-    return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind]).lower()
+    return " ".join([candidate_resource_filename(candidate), candidate.alt, candidate.cls]).lower()
 
 
 def logo_rejection_reason(candidate: AssetCandidate) -> str:
@@ -528,10 +537,7 @@ def logo_rejection_reason(candidate: AssetCandidate) -> str:
 
 
 def candidate_brand_tokens(candidate: AssetCandidate) -> set[str]:
-    src_name = ""
-    if not candidate.src.startswith("data:image/"):
-        src_name = Path(urlparse(candidate.src).path).name
-    tokens = normalized_identity_tokens(src_name, candidate.alt)
+    tokens = normalized_identity_tokens(candidate_resource_filename(candidate), candidate.alt, candidate.cls)
     return {
         token
         for token in tokens
@@ -979,34 +985,7 @@ def render_page(
     origin: str,
     timeout_ms: int,
 ) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str], list[str]]:
-    notes: list[str] = []
-    try:
-        remaining = remaining_fetch_milliseconds()
-        if remaining is not None and remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        effective_timeout = min(timeout_ms, max(500, remaining or timeout_ms))
-        page.goto(target_url, wait_until="domcontentloaded", timeout=effective_timeout)
-        try:
-            page.wait_for_load_state("networkidle", timeout=min(effective_timeout, 4000))
-        except Exception:
-            notes.append(f"browser_networkidle_timeout:{target_url}")
-        remaining = remaining_fetch_milliseconds()
-        if remaining is not None and remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        page.wait_for_timeout(min(BROWSER_WAIT_MS, remaining or BROWSER_WAIT_MS))
-        final_url = str(page.url)
-        html = page.content()
-        logo_candidates, visual_candidates, page_urls = parse_page(final_url, html, origin=origin)
-        rendered_payload = extract_rendered_payload(page)
-        extra_logos, extra_visuals, extra_pages = rendered_payload_to_candidates(final_url, rendered_payload, origin)
-        logo_candidates.extend(extra_logos)
-        visual_candidates.extend(extra_visuals)
-        page_urls.extend(extra_pages)
-        notes.append(f"browser_page:{final_url}:origin={origin}")
-        return final_url, logo_candidates, visual_candidates, dedupe(page_urls)[:MAX_PAGE_CANDIDATES], notes
-    except Exception as exc:
-        notes.append(f"browser_page_failed:{target_url}:{exc.__class__.__name__}:origin={origin}")
-        return None, [], [], [], notes
+    return None, [], [], [], ["browser_skip:network_unsafe"]
 
 
 def discover_assets_for_domain_light(
@@ -1080,78 +1059,7 @@ def discover_assets_for_domain_browser(
     buyer_name: str,
     timeout_ms: int,
 ) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
-    notes: list[str] = []
-    try:
-        sync_playwright, _ = import_playwright()
-    except RuntimeError as exc:
-        notes.append(str(exc))
-        return None, [], [], notes
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
-            user_agent=USER_AGENT,
-        )
-        page = context.new_page()
-        try:
-            all_logo_candidates: list[AssetCandidate] = []
-            all_visual_candidates: list[AssetCandidate] = []
-            resolved_url: str | None = None
-            page_urls: list[tuple[str, str]] = []
-
-            for base_url in candidate_base_urls(domain):
-                final_url, logos, visuals, discovered_pages, base_notes = render_page(page, base_url, "official", timeout_ms)
-                notes.extend(base_notes)
-                if not final_url:
-                    continue
-                resolved_url = final_url
-                all_logo_candidates.extend(logos)
-                all_visual_candidates.extend(visuals)
-                page_urls.extend((url, "official") for url in discovered_pages)
-                break
-
-            if not resolved_url:
-                return None, [], [], notes
-
-            search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
-            notes.extend(search_notes)
-            page_urls.extend(search_pages)
-
-            seen = set()
-            processed = 0
-            for page_url, origin in page_urls:
-                if page_url in seen:
-                    continue
-                seen.add(page_url)
-                processed += 1
-                if processed > BROWSER_PAGE_LIMIT:
-                    notes.append(f"browser_page_limit:{BROWSER_PAGE_LIMIT}")
-                    break
-                final_url, logos, visuals, _, page_notes = render_page(page, page_url, origin, timeout_ms)
-                notes.extend(page_notes)
-                if not final_url:
-                    continue
-                all_logo_candidates.extend(logos)
-                all_visual_candidates.extend(visuals)
-
-            for item in all_visual_candidates:
-                item.score = score_visual_candidate(item)
-
-            ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
-            for item in all_logo_candidates:
-                reason = logo_candidate_rejection_reason(item, buyer_name, domain) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
-                if reason:
-                    notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
-            ranked_visuals = sorted(
-                [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
-                key=lambda item: item.score,
-                reverse=True,
-            )
-            return resolved_url, ranked_logos, ranked_visuals, notes
-        finally:
-            context.close()
-            browser.close()
+    return None, [], [], ["browser_skip:network_unsafe"]
 
 
 def inspect_downloaded_asset(path: Path) -> dict[str, Any]:
@@ -1557,6 +1465,7 @@ def main() -> int:
                 "asset_mode": args.asset_mode,
                 "asset_logic_version": ASSET_LOGIC_VERSION,
                 "notes": ["skipped:asset_fetch_time_budget_exceeded"],
+                "elapsed_seconds": 0.0,
             })
             continue
         global FETCH_DEADLINE

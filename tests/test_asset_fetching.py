@@ -345,6 +345,152 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "response_too_large"):
                 self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png", max_bytes=5)
 
+    def _fake_playwright_without_network(self):
+        class FakePage:
+            def __init__(self):
+                self.goto_calls = []
+                self.url = ""
+
+            def goto(self, url, **_kwargs):
+                self.goto_calls.append(url)
+                self.url = url
+
+            def wait_for_load_state(self, *_args, **_kwargs):
+                return None
+
+            def wait_for_timeout(self, *_args, **_kwargs):
+                return None
+
+            def content(self):
+                return "<html></html>"
+
+        page = FakePage()
+
+        class FakeContext:
+            def new_page(self):
+                return page
+
+            def close(self):
+                return None
+
+        class FakeBrowser:
+            def new_context(self, **_kwargs):
+                return FakeContext()
+
+            def close(self):
+                return None
+
+        class FakePlaywrightManager:
+            def __enter__(self):
+                return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **_kwargs: FakeBrowser()))
+
+            def __exit__(self, *_args):
+                return False
+
+        return page, FakePlaywrightManager
+
+    def test_browser_mode_skips_unsafe_playwright_navigation(self):
+        page, fake_playwright_manager = self._fake_playwright_without_network()
+        rendered_payload = {
+            "icons": [],
+            "inlineSvgs": [],
+            "metaImages": [],
+            "images": [],
+            "backgrounds": [],
+            "links": [],
+        }
+
+        with patch.object(
+            self.fetch_buyer_assets,
+            "import_playwright",
+            return_value=(fake_playwright_manager, object()),
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "extract_rendered_payload",
+            return_value=rendered_payload,
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "search_candidate_pages_with_notes",
+            return_value=([], []),
+        ):
+            final_url, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain_browser(
+                "acme.com",
+                "Acme",
+                1000,
+            )
+
+        self.assertIsNone(final_url)
+        self.assertEqual(logos, [])
+        self.assertEqual(visuals, [])
+        self.assertEqual(page.goto_calls, [])
+        self.assertIn("browser_skip:network_unsafe", notes)
+
+    def test_render_page_skips_unsafe_playwright_navigation(self):
+        page, _ = self._fake_playwright_without_network()
+
+        final_url, logos, visuals, pages, notes = self.fetch_buyer_assets.render_page(
+            page,
+            "https://acme.com",
+            "official",
+            1000,
+        )
+
+        self.assertIsNone(final_url)
+        self.assertEqual(logos, [])
+        self.assertEqual(visuals, [])
+        self.assertEqual(pages, [])
+        self.assertEqual(page.goto_calls, [])
+        self.assertIn("browser_skip:network_unsafe", notes)
+
+    def test_auto_mode_skips_unsafe_playwright_navigation(self):
+        page, fake_playwright_manager = self._fake_playwright_without_network()
+
+        with patch.object(
+            self.fetch_buyer_assets,
+            "discover_assets_for_domain_light",
+            return_value=("https://acme.com", [], [], ["light:empty"]),
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "import_playwright",
+            return_value=(fake_playwright_manager, object()),
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "get_env_var",
+            return_value="1",
+        ):
+            final_url, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain(
+                "acme.com",
+                "Acme",
+                "auto",
+                1000,
+            )
+
+        self.assertEqual(final_url, "https://acme.com")
+        self.assertEqual(logos, [])
+        self.assertEqual(visuals, [])
+        self.assertEqual(page.goto_calls, [])
+        self.assertIn("browser_skip:network_unsafe", notes)
+
+    def test_curl_disables_curlrc_and_proxies_before_connecting(self):
+        commands = []
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=b"https://acme.com/logo.png\n200\nimage/png\n",
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers), patch("subprocess.run", side_effect=run_curl):
+            self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+
+        self.assertEqual(commands[0][:2], ["curl", "-q"])
+        self.assertEqual(commands[0][2:4], ["--noproxy", "*"])
+        self.assertNotIn("-L", commands[0])
+
     def test_curl_pins_hostname_to_validated_public_ip(self):
         commands = []
 
@@ -458,6 +604,45 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
         self.assertEqual(self.fetch_buyer_assets.logo_rejection_reason(candidate), "")
 
+    def test_logo_rejection_ignores_url_directories_page_and_kind(self):
+        candidate = self.AssetCandidate(
+            src="https://acme.com/certification/assets/acme-logo.svg",
+            page="https://acme.com/certificate",
+            kind="certificate",
+            alt="Acme logo",
+            cls="brand-mark",
+            origin="official",
+        )
+
+        self.assertEqual(
+            self.fetch_buyer_assets.logo_candidate_rejection_reason(candidate, "Acme", "acme.com"),
+            "",
+        )
+
+    def test_logo_rejection_ignores_url_query(self):
+        candidate = self.AssetCandidate(
+            src="https://acme.com/assets/acme-logo.svg?certificate=badge",
+            page="https://acme.com",
+            kind="image",
+            alt="Acme logo",
+            cls="brand-mark",
+            origin="official",
+        )
+
+        self.assertEqual(self.fetch_buyer_assets.logo_rejection_reason(candidate), "")
+
+    def test_candidate_brand_tokens_include_class(self):
+        candidate = self.AssetCandidate(
+            src="https://acme.com/assets/logo.svg",
+            page="https://acme.com",
+            kind="image",
+            alt="Corporate identity",
+            cls="acme-brand",
+            origin="official",
+        )
+
+        self.assertIn("acme", self.fetch_buyer_assets.candidate_brand_tokens(candidate))
+
     def test_logo_rejection_reason_still_rejects_real_badge_hints(self):
         candidate = self.AssetCandidate(
             src="https://acme.com/assets/certification-badge.svg",
@@ -536,6 +721,7 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             report_rows = json.loads(report_path.read_text(encoding="utf-8-sig"))
             skipped = report_rows[1]
+            normal = report_rows[0]
             self.assertEqual(skipped["name"], "Bravo")
             self.assertEqual(skipped["logo_confidence"], "missing")
             self.assertEqual(skipped["logo_source"], "")
@@ -544,3 +730,5 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             self.assertEqual(skipped["asset_logic_version"], self.fetch_buyer_assets.ASSET_LOGIC_VERSION)
             self.assertEqual(skipped["site_source"], "")
             self.assertEqual(skipped["notes"], ["skipped:asset_fetch_time_budget_exceeded"])
+            self.assertEqual(set(skipped), set(normal))
+            self.assertEqual(skipped["elapsed_seconds"], 0.0)
