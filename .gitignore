@@ -6,3 +6,4 @@ output/
 examples/sa-power-transmission/
 ppt-template-batch/assets/examples/
 console-projects/
+.worktrees/
