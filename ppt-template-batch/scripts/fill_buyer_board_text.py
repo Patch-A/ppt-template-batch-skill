@@ -49,22 +49,42 @@ def copy_font(source_run, target_run) -> None:
             pass
 
 
-def replace_text(text_frame, value: str) -> None:
-    source_paragraph = text_frame.paragraphs[0]
-    source_run = get_first_run(source_paragraph)
-    alignment = source_paragraph.alignment
+def safe_replace_text_frame(text_frame, value: str) -> bool:
+    """Replace text inside the original run so template effects stay intact."""
+    if not text_frame.paragraphs:
+        return False
 
+    first_run = get_first_run(text_frame.paragraphs[0])
+    if first_run is None:
+        first_run = text_frame.paragraphs[0].add_run()
+
+    for paragraph_index, paragraph in enumerate(text_frame.paragraphs):
+        for run_index, run in enumerate(paragraph.runs):
+            if paragraph_index == 0 and run_index == 0:
+                continue
+            run.text = ""
+    first_run.text = value
+    return True
+
+
+def safe_replace_shape_text(shape, value: str) -> bool:
+    """Replace only the text of a title/footer/fixed text shape."""
+    if not getattr(shape, "has_text_frame", False):
+        return False
+    return safe_replace_text_frame(shape.text_frame, value)
+
+
+def replace_text(text_frame, value: str) -> None:
+    if safe_replace_text_frame(text_frame, value):
+        return
     text_frame.clear()
-    paragraph = text_frame.paragraphs[0]
-    paragraph.alignment = alignment
-    run = paragraph.add_run()
-    run.text = value
-    copy_font(source_run, run)
+    text_frame.paragraphs[0].add_run().text = value
 
 
 def set_shape_text(slide, shape_index: int, value: str) -> None:
     shape = get_shape(slide, shape_index)
-    replace_text(shape.text_frame, value)
+    if not safe_replace_shape_text(shape, value):
+        raise ValueError(f"Shape {shape_index} does not have a usable text frame")
 
 
 def set_table_cell(table, row: int, col: int, value: str) -> None:
@@ -236,10 +256,11 @@ def fill_content_slides(
                 set_table_cell(table, row, label_col, label)
             set_table_cell(table, row, value_col, value)
 
-            if "label_color" in field:
-                apply_override_color(table.cell(row, label_col), field["label_color"])
-            if "value_color" in field:
-                apply_override_color(table.cell(row, value_col), field["value_color"])
+            if content_config.get("allow_style_overrides", False):
+                if "label_color" in field:
+                    apply_override_color(table.cell(row, label_col), field["label_color"])
+                if "value_color" in field:
+                    apply_override_color(table.cell(row, value_col), field["value_color"])
 
         adjust_dynamic_row_heights(
             table_shape,

@@ -108,6 +108,8 @@ Import the generated ZIP through Aily's local skill upload flow. Do not unpack i
 
 Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-agent-skill/references/buyer-board-workflow-changelog.md`](feishu-agent-skill/references/buyer-board-workflow-changelog.md). The checklist covers stale multi-run text, dynamic content-row sizing, complete repeated-slide cloning, exact-enterprise Logo verification, and no-fabrication fallbacks.
 
+The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md`](feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md). It adds fixed-style protection for content titles and footer prompts, safe original-run replacement, explicit style-override opt-in, and model-selection guidance.
+
 ### 一图全解 preset
 
 Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.

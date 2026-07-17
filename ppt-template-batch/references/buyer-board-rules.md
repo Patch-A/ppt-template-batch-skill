@@ -25,6 +25,8 @@ Use this production order:
 - Preferred Chinese font: `Microsoft YaHei`.
 - Default body size: `16 pt`.
 - Avoid shrinking text excessively to force fit.
+- Replace text in the existing shape, paragraph, and first run. Never create a replacement text box for a template title or footer.
+- Do not reset `font.name`, `font.size`, `bold`, `color`, shadow, outline, spacing, or position on fixed elements. Style overrides are opt-in only for explicitly approved content fields.
 
 ## Content-page structure
 
@@ -141,6 +143,7 @@ If no asset is available:
 - Apply dynamic heights after text filling. Use actual wrapped line count and available width; keep identity rows and fixed footer geometry unchanged.
 - When the template has too few content pages, duplicate a complete content slide, including its table, images, decorations, relationships, and registered slide metadata. A new blank-layout slide is not an equivalent replacement.
 - After export, scan every table cell and text shape for known template keywords and inspect the rendered previews for clipping, overflow, stale graphics, and unexpected blank areas.
+- Compare the content-page title and bottom prompt against the template's original run properties, including font effects when present.
 
 The incident-level record and reusable repair examples are in `../../feishu-agent-skill/references/buyer-board-workflow-changelog.md`.
 ## Model API boundaries

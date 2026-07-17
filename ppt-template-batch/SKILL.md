@@ -171,7 +171,7 @@ Preserve qualification details in buyer records:
 
 For multi-product research, `products` must be a buyer-specific one-to-three-item subset justified by `demand_scenarios` and `evidence`; never copy the full global procurement request into every buyer. Use equipment-level names such as `切菜机、切肉机`, not category-level phrases such as `商用厨房设备、食品加工设备、中央厨房系统`. If public evidence is insufficient, mark the field for manual verification instead of presenting a broad category as a confirmed purchase.
 
-For buyer-board tables, keep fixed identity rows unchanged and dynamically size the `products` and `bio` rows from actual line count. Preserve the template font and cell margins, update the table shape height, and do not move or overwrite the fixed header/footer.
+For buyer-board tables, keep fixed identity rows unchanged and dynamically size the `products` and `bio` rows from actual line count. Preserve the template font and cell margins, update the table shape height, and do not move or overwrite the fixed header/footer. Replace titles and footer prompts inside their original shape/run; style overrides are opt-in only through `content.allow_style_overrides: true` for explicitly approved content fields.
 - `confidence`
 - `risks`
 
