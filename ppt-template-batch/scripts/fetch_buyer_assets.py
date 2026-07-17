@@ -770,10 +770,7 @@ def parse_page(base_url: str, html: str, origin: str = "official") -> tuple[list
             cls=item.get("rel", ""),
             origin=origin,
         )
-        if any(hint in logo_evidence_target(candidate) for hint in LOGO_HINTS):
-            logo_candidates.append(candidate)
-        else:
-            visual_candidates.append(candidate)
+        logo_candidates.append(candidate)
     for item in parser.images:
         full = urljoin(base_url, item["src"])
         candidate = AssetCandidate(

@@ -1,6 +1,7 @@
 import importlib
 from io import StringIO
 import json
+import queue
 import socket
 import sys
 import tempfile
@@ -497,10 +498,12 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
     def test_blocked_dns_respects_deadline_before_starting_curl(self):
         commands = []
+        entered_dns = threading.Event()
         release_dns = threading.Event()
-        timer = threading.Timer(0.15, release_dns.set)
+        result_queue = queue.Queue(maxsize=1)
 
         def blocked_getaddrinfo(*_args):
+            entered_dns.set()
             release_dns.wait()
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
@@ -509,22 +512,32 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             raise AssertionError("curl must not start after DNS deadline expiry")
 
         previous_deadline = self.fetch_buyer_assets.FETCH_DEADLINE
-        self.fetch_buyer_assets.FETCH_DEADLINE = time.monotonic() + 0.02
-        timer.start()
-        started = time.monotonic()
+        self.fetch_buyer_assets.FETCH_DEADLINE = time.monotonic() + 10
+
+        def fetch_in_thread():
+            try:
+                self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+            except BaseException as exc:
+                result_queue.put(exc)
+
         try:
             with patch("socket.getaddrinfo", side_effect=blocked_getaddrinfo), patch(
                 "subprocess.run",
                 side_effect=run_curl,
             ):
-                with self.assertRaisesRegex(TimeoutError, "asset_fetch_per_buyer_timeout"):
-                    self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+                fetch_thread = threading.Thread(target=fetch_in_thread)
+                fetch_thread.start()
+                self.assertTrue(entered_dns.wait(timeout=1))
+                self.fetch_buyer_assets.FETCH_DEADLINE = time.monotonic() - 1
+                release_dns.set()
+                error = result_queue.get(timeout=1)
+                fetch_thread.join(timeout=1)
         finally:
             release_dns.set()
-            timer.cancel()
             self.fetch_buyer_assets.FETCH_DEADLINE = previous_deadline
 
-        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertIsInstance(error, TimeoutError)
+        self.assertEqual(str(error), "asset_fetch_per_buyer_timeout")
         self.assertEqual(commands, [])
 
     def test_redirect_chain_stops_before_second_connection_when_deadline_expires(self):
@@ -719,6 +732,18 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             "https://acme.com/brand/logo/assets/image.svg?logo=1",
             [candidate.src for candidate in visuals],
         )
+
+    def test_parse_page_keeps_link_icon_as_logo_candidate(self):
+        logos, visuals, _ = self.fetch_buyer_assets.parse_page(
+            "https://acme.com",
+            '<link rel="icon" href="/assets/site-mark.svg">',
+        )
+
+        self.assertIn(
+            "https://acme.com/assets/site-mark.svg",
+            [candidate.src for candidate in logos],
+        )
+        self.assertEqual(visuals, [])
 
     def test_logo_rejection_ignores_url_directories_page_and_kind(self):
         candidate = self.AssetCandidate(
