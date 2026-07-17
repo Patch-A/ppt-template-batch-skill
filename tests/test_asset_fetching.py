@@ -359,6 +359,9 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertEqual(visuals, [])
         self.assertIn("browser_skip:network_unsafe", notes)
 
+    def test_browser_modes_have_no_playwright_runtime_dependency(self):
+        self.assertFalse(hasattr(self.fetch_buyer_assets, "import_playwright"))
+
     def test_auto_mode_skips_network_with_public_api(self):
         with patch.object(
             self.fetch_buyer_assets,
