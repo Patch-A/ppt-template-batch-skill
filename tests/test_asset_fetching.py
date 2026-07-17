@@ -4,6 +4,8 @@ import json
 import socket
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from base64 import b64encode
 from pathlib import Path
@@ -468,6 +470,63 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertEqual(resolve_entry, "cdn.xn--bcher-kva.example:443:93.184.216.34")
         getaddrinfo.assert_called_once_with("cdn.xn--bcher-kva.example", None)
 
+    def test_curl_removes_idna_normalized_ideographic_full_stop_before_pinning(self):
+        commands = []
+        normalized_url = "https://example.com/logo.png"
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=f"{normalized_url}\n200\nimage/png\n".encode("utf-8"),
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers) as getaddrinfo, patch(
+            "subprocess.run",
+            side_effect=run_curl,
+        ):
+            self.fetch_buyer_assets.fetch_url_with_curl("https://example.com\u3002/logo.png")
+
+        resolve_entry = commands[0][commands[0].index("--resolve") + 1]
+        self.assertEqual(commands[0][-1], normalized_url)
+        self.assertEqual(resolve_entry, "example.com:443:93.184.216.34")
+        getaddrinfo.assert_called_once_with("example.com", None)
+
+    def test_blocked_dns_respects_deadline_before_starting_curl(self):
+        commands = []
+        release_dns = threading.Event()
+        timer = threading.Timer(0.15, release_dns.set)
+
+        def blocked_getaddrinfo(*_args):
+            release_dns.wait()
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            raise AssertionError("curl must not start after DNS deadline expiry")
+
+        previous_deadline = self.fetch_buyer_assets.FETCH_DEADLINE
+        self.fetch_buyer_assets.FETCH_DEADLINE = time.monotonic() + 0.02
+        timer.start()
+        started = time.monotonic()
+        try:
+            with patch("socket.getaddrinfo", side_effect=blocked_getaddrinfo), patch(
+                "subprocess.run",
+                side_effect=run_curl,
+            ):
+                with self.assertRaisesRegex(TimeoutError, "asset_fetch_per_buyer_timeout"):
+                    self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+        finally:
+            release_dns.set()
+            timer.cancel()
+            self.fetch_buyer_assets.FETCH_DEADLINE = previous_deadline
+
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertEqual(commands, [])
+
     def test_redirect_chain_stops_before_second_connection_when_deadline_expires(self):
         commands = []
 
@@ -488,7 +547,7 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         previous_deadline = self.fetch_buyer_assets.FETCH_DEADLINE
         self.fetch_buyer_assets.FETCH_DEADLINE = 1.0
         try:
-            with patch.object(self.fetch_buyer_assets.time, "monotonic", side_effect=[0.0, 0.0, 1.0]), patch(
+            with patch.object(self.fetch_buyer_assets.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 0.0, 1.0]), patch(
                 "socket.getaddrinfo",
                 return_value=dns_answers,
             ), patch("subprocess.run", side_effect=run_curl):
@@ -638,6 +697,28 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
         self.assertNotIn(directory_only, ranked)
         self.assertIn(real_evidence, ranked)
+
+    def test_parse_page_classifies_logo_images_from_basename_alt_and_class_only(self):
+        logos, visuals, _ = self.fetch_buyer_assets.parse_page(
+            "https://acme.com",
+            (
+                '<img src="/brand/logo/assets/image.svg?logo=1" alt="" class="">'
+                '<img src="/assets/image.svg" alt="Acme logo" class="brand-mark">'
+            ),
+        )
+
+        self.assertNotIn(
+            "https://acme.com/brand/logo/assets/image.svg?logo=1",
+            [candidate.src for candidate in logos],
+        )
+        self.assertIn(
+            "https://acme.com/assets/image.svg",
+            [candidate.src for candidate in logos],
+        )
+        self.assertIn(
+            "https://acme.com/brand/logo/assets/image.svg?logo=1",
+            [candidate.src for candidate in visuals],
+        )
 
     def test_logo_rejection_ignores_url_directories_page_and_kind(self):
         candidate = self.AssetCandidate(

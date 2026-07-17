@@ -6,10 +6,12 @@ import binascii
 import ipaddress
 import json
 import os
+import queue
 import re
 import socket
 import tempfile
 import time
+import threading
 import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -93,6 +95,9 @@ MAX_REDIRECT_HOPS = 5
 ASSET_LOGIC_VERSION = 4
 LOGO_MIN_SCORE = 10
 FETCH_DEADLINE: float | None = None
+_DNS_REQUEST_QUEUE = queue.Queue(maxsize=1)
+_DNS_WORKER: threading.Thread | None = None
+_DNS_WORKER_LOCK = threading.Lock()
 
 
 @dataclass
@@ -144,7 +149,7 @@ def _normalize_hostname(hostname: str) -> str:
     if address is not None:
         return str(address)
     try:
-        normalized = host.encode("idna").decode("ascii").lower()
+        normalized = host.encode("idna").decode("ascii").lower().rstrip(".")
     except UnicodeError as exc:
         raise ValueError("invalid_host") from exc
     if not normalized:
@@ -212,6 +217,61 @@ def _same_site_host(observed: str, expected: str) -> bool:
     return observed == expected or observed.endswith(f".{expected}")
 
 
+def _dns_worker() -> None:
+    while True:
+        host, response_queue, cancelled = _DNS_REQUEST_QUEUE.get()
+        if cancelled.is_set():
+            continue
+        try:
+            result = socket.getaddrinfo(host, None)
+            error = None
+        except Exception as exc:
+            result = None
+            error = exc
+        if not cancelled.is_set():
+            try:
+                response_queue.put_nowait((result, error))
+            except queue.Full:
+                pass
+
+
+def _ensure_dns_worker() -> None:
+    global _DNS_WORKER
+    with _DNS_WORKER_LOCK:
+        if _DNS_WORKER is not None and _DNS_WORKER.is_alive():
+            return
+        _DNS_WORKER = threading.Thread(target=_dns_worker, name="asset-dns", daemon=True)
+        _DNS_WORKER.start()
+
+
+def _resolve_hostname(host: str) -> list[Any]:
+    if FETCH_DEADLINE is None:
+        return socket.getaddrinfo(host, None)
+    remaining = FETCH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("asset_fetch_per_buyer_timeout")
+    _ensure_dns_worker()
+    response_queue = queue.Queue(maxsize=1)
+    cancelled = threading.Event()
+    try:
+        _DNS_REQUEST_QUEUE.put((host, response_queue, cancelled), timeout=remaining)
+    except queue.Full as exc:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout") from exc
+    remaining = FETCH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout")
+    try:
+        result, error = response_queue.get(timeout=remaining)
+    except queue.Empty as exc:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout") from exc
+    if error is not None:
+        raise error
+    return result
+
+
 def _validate_and_resolve_asset_url(
     url: str,
     base_host: str = "",
@@ -243,7 +303,9 @@ def _validate_and_resolve_asset_url(
             return False, "different_host", "", "", 0, ""
     if address is None:
         try:
-            resolved = socket.getaddrinfo(host, None)
+            resolved = _resolve_hostname(host)
+        except TimeoutError:
+            raise
         except OSError:
             return False, "host_resolution_failed", "", "", 0, ""
         resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
@@ -559,18 +621,22 @@ def normalized_identity_tokens(*values: str) -> set[str]:
     return tokens
 
 
-def logo_target(candidate: AssetCandidate) -> str:
-    return " ".join([candidate_resource_filename(candidate), candidate.alt, candidate.cls]).lower()
-
-
 def candidate_resource_filename(candidate: AssetCandidate) -> str:
     if candidate.src.startswith("data:image/"):
         return ""
     return Path(urlparse(candidate.src).path).name
 
 
-def logo_rejection_target(candidate: AssetCandidate) -> str:
+def logo_evidence_target(candidate: AssetCandidate) -> str:
     return " ".join([candidate_resource_filename(candidate), candidate.alt, candidate.cls]).lower()
+
+
+def logo_target(candidate: AssetCandidate) -> str:
+    return logo_evidence_target(candidate)
+
+
+def logo_rejection_target(candidate: AssetCandidate) -> str:
+    return logo_evidence_target(candidate)
 
 
 def logo_rejection_reason(candidate: AssetCandidate) -> str:
@@ -697,18 +763,31 @@ def parse_page(base_url: str, html: str, origin: str = "official") -> tuple[list
     logo_candidates.extend(extract_inline_svg_logos(base_url, html, origin))
 
     for item in parser.link_icons:
-        logo_candidates.append(AssetCandidate(src=urljoin(base_url, item["src"]), page=base_url, kind=item["kind"], origin=origin))
+        candidate = AssetCandidate(
+            src=urljoin(base_url, item["src"]),
+            page=base_url,
+            kind=item["kind"],
+            cls=item.get("rel", ""),
+            origin=origin,
+        )
+        if any(hint in logo_evidence_target(candidate) for hint in LOGO_HINTS):
+            logo_candidates.append(candidate)
+        else:
+            visual_candidates.append(candidate)
     for item in parser.images:
         full = urljoin(base_url, item["src"])
-        target = " ".join([item.get("src", ""), item.get("alt", ""), item.get("class", "")]).lower()
-        if any(hint in target for hint in LOGO_HINTS):
-            logo_candidates.append(
-                AssetCandidate(src=full, page=base_url, kind=item["kind"], alt=item.get("alt", ""), cls=item.get("class", ""), origin=origin)
-            )
+        candidate = AssetCandidate(
+            src=full,
+            page=base_url,
+            kind=item["kind"],
+            alt=item.get("alt", ""),
+            cls=item.get("class", ""),
+            origin=origin,
+        )
+        if any(hint in logo_evidence_target(candidate) for hint in LOGO_HINTS):
+            logo_candidates.append(candidate)
         else:
-            visual_candidates.append(
-                AssetCandidate(src=full, page=base_url, kind=item["kind"], alt=item.get("alt", ""), cls=item.get("class", ""), origin=origin)
-            )
+            visual_candidates.append(candidate)
     for item in parser.meta_images:
         visual_candidates.insert(0, AssetCandidate(src=urljoin(base_url, item["src"]), page=base_url, kind=item["kind"], origin=origin))
 
