@@ -1,4 +1,5 @@
 import json
+import importlib
 import importlib.util
 import sys
 import tempfile
@@ -14,24 +15,27 @@ SCRIPTS_DIR = REPO_ROOT / "ppt-template-batch" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from fill_buyer_briefing_pages import DEFAULT_MAPPING, fill_slide
-from fill_ppt_from_records import fill_presentation
-
-
-_BUILDER_PATH = REPO_ROOT / "scripts" / "build_feishu_agent_skill.py"
-_BUILDER_SPEC = importlib.util.spec_from_file_location("build_feishu_agent_skill", _BUILDER_PATH)
-assert _BUILDER_SPEC and _BUILDER_SPEC.loader
-build_feishu_agent_skill = importlib.util.module_from_spec(_BUILDER_SPEC)
-_BUILDER_SPEC.loader.exec_module(build_feishu_agent_skill)
-
-_YITU_PATH = REPO_ROOT / "yitu-quanjie" / "scripts" / "yitu_quanjie_replace.py"
-_YITU_SPEC = importlib.util.spec_from_file_location("yitu_quanjie_replace", _YITU_PATH)
-assert _YITU_SPEC and _YITU_SPEC.loader
-yitu_quanjie_replace = importlib.util.module_from_spec(_YITU_SPEC)
-_YITU_SPEC.loader.exec_module(yitu_quanjie_replace)
-
-
 class PresetContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.fill_buyer_briefing_pages = importlib.import_module("fill_buyer_briefing_pages")
+        cls.fill_ppt_from_records = importlib.import_module("fill_ppt_from_records")
+
+        builder_path = REPO_ROOT / "scripts" / "build_feishu_agent_skill.py"
+        builder_spec = importlib.util.spec_from_file_location("build_feishu_agent_skill", builder_path)
+        if not builder_spec or not builder_spec.loader:
+            raise ImportError(f"Unable to load {builder_path}")
+        cls.build_feishu_agent_skill = importlib.util.module_from_spec(builder_spec)
+        builder_spec.loader.exec_module(cls.build_feishu_agent_skill)
+
+        yitu_path = REPO_ROOT / "yitu-quanjie" / "scripts" / "yitu_quanjie_replace.py"
+        yitu_spec = importlib.util.spec_from_file_location("yitu_quanjie_replace", yitu_path)
+        if not yitu_spec or not yitu_spec.loader:
+            raise ImportError(f"Unable to load {yitu_path}")
+        cls.yitu_quanjie_replace = importlib.util.module_from_spec(yitu_spec)
+        yitu_spec.loader.exec_module(cls.yitu_quanjie_replace)
+
     def test_generic_report_contains_shared_quality_keys(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -43,10 +47,16 @@ class PresetContractTests(unittest.TestCase):
             records.write_text(json.dumps({"records": []}), encoding="utf-8")
             config.write_text(json.dumps({"required_fields": [], "slides": []}), encoding="utf-8")
 
-            report = fill_presentation(template, records, config, output, root / "workspace")
+            report = self.fill_ppt_from_records.fill_presentation(template, records, config, output, root / "workspace")
 
-            for key in ("ok", "missing_required_fields", "missing_assets", "warnings"):
-                self.assertIn(key, report)
+            self.assertIs(type(report["ok"]), bool)
+            self.assertIs(report["ok"], True)
+            self.assertIsInstance(report["missing_required_fields"], list)
+            self.assertEqual(report["missing_required_fields"], [])
+            self.assertIsInstance(report["missing_assets"], list)
+            self.assertEqual(report["missing_assets"], [])
+            self.assertIsInstance(report["warnings"], list)
+            self.assertEqual(report["warnings"], [])
 
     def test_buyer_briefing_clears_unused_slots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -77,7 +87,7 @@ class PresetContractTests(unittest.TestCase):
                     for index in range(5)
                 ] + [{}],
             }
-            fill_slide(slide, page, mapping)
+            self.fill_buyer_briefing_pages.fill_slide(slide, page, mapping)
 
             self.assertEqual(slide.shapes[mapping["slots"][0]["summary_shape"] - 1].text, "Buyer 0 summary")
             self.assertEqual(slide.shapes[mapping["slots"][0]["products_shape"] - 1].text, "采购品类：Product 0")
@@ -96,7 +106,7 @@ class PresetContractTests(unittest.TestCase):
             presentation.save(template_path)
 
             with self.assertRaisesRegex(KeyError, "Mapped shapes were not found"):
-                yitu_quanjie_replace.run_replacement(
+                self.yitu_quanjie_replace.run_replacement(
                     template_path,
                     output_path,
                     {"Missing Shape": "replacement"},
@@ -106,7 +116,7 @@ class PresetContractTests(unittest.TestCase):
 
     def test_feishu_zip_contains_only_portable_skill_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            output = build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+            output = self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
 
             with zipfile.ZipFile(output) as archive:
                 names = archive.namelist()
