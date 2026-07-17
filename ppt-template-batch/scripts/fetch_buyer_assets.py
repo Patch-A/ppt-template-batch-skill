@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import tempfile
 import time
 import unicodedata
@@ -136,32 +137,85 @@ def _hostname_without_www(hostname: str) -> str:
 
 
 def _looks_like_ip_literal(host: str) -> bool:
-    return ":" in host or bool(re.fullmatch(r"\d+(?:\.\d+){3}", host))
+    return ":" in host or bool(re.fullmatch(r"(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*", host, re.I))
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        if not _looks_like_ip_literal(host):
+            return None
+        if ":" in host:
+            raise
+        try:
+            return ipaddress.ip_address(socket.inet_aton(host))
+        except OSError as exc:
+            raise ValueError("invalid_ip_literal") from exc
+
+
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        address.is_global
+        and not address.is_loopback
+        and not address.is_private
+        and not address.is_link_local
+        and not address.is_reserved
+        and not address.is_multicast
+        and not address.is_unspecified
+    )
+
+
+def _same_site_host(observed: str, expected: str) -> bool:
+    if not expected:
+        return True
+    return observed == expected or observed.endswith(f".{expected}")
 
 
 def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
     try:
         parsed = urlparse(url)
+        parsed_hostname = parsed.hostname
     except Exception:
         return False, "invalid_url"
     if parsed.scheme.lower() not in {"http", "https"}:
         return False, "invalid_scheme"
-    if not parsed.hostname:
+    if not parsed_hostname:
         return False, "invalid_host"
-    host = parsed.hostname.strip().strip("[]").lower()
+    host = parsed_hostname.strip().strip("[]").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return False, "local_host"
     try:
-        address = ipaddress.ip_address(host)
+        address = _parse_ip_literal(host)
     except ValueError:
         if _looks_like_ip_literal(host):
             return False, "invalid_ip_literal"
         address = None
-    if address and (address.is_private or address.is_loopback or address.is_link_local):
-        return False, "private_network_target"
+    if address and not _is_public_address(address):
+        return False, "non_public_ip"
     if base_host:
         expected = _hostname_without_www(urlparse(base_host if "://" in base_host else f"//{base_host}").hostname or base_host)
-        observed = _hostname_without_www(parsed.hostname)
-        if expected and observed != expected:
+        observed = _hostname_without_www(parsed_hostname)
+        if not _same_site_host(observed, expected):
             return False, "different_host"
+    if address is None:
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except OSError:
+            return False, "host_resolution_failed"
+        resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+        for item in resolved:
+            sockaddr = item[4]
+            if not sockaddr:
+                continue
+            try:
+                resolved_addresses.append(ipaddress.ip_address(sockaddr[0]))
+            except ValueError:
+                return False, "host_resolution_failed"
+        if not resolved_addresses:
+            return False, "host_resolution_failed"
+        if any(not _is_public_address(item) for item in resolved_addresses):
+            return False, "non_public_ip"
     return True, ""
 
 

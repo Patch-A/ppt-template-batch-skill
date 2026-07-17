@@ -1,5 +1,6 @@
 import importlib
 import json
+import socket
 import sys
 import tempfile
 import unittest
@@ -206,7 +207,88 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         valid, reason = self.fetch_buyer_assets.validate_asset_url("http://127.0.0.1/logo.png")
 
         self.assertFalse(valid)
-        self.assertIn("private", reason)
+        self.assertEqual(reason, "non_public_ip")
+
+    def test_validate_asset_url_rejects_localhost_names(self):
+        for host in ["localhost", "localhost.", "assets.localhost", "ASSETS.LOCALHOST."]:
+            with self.subTest(host=host):
+                valid, reason = self.fetch_buyer_assets.validate_asset_url(f"https://{host}/logo.png")
+
+                self.assertFalse(valid)
+                self.assertEqual(reason, "local_host")
+
+    def test_validate_asset_url_rejects_loopback_literal_bypasses(self):
+        for host in ["127.1", "2130706433", "0x7f000001"]:
+            with self.subTest(host=host):
+                valid, reason = self.fetch_buyer_assets.validate_asset_url(f"https://{host}/logo.png")
+
+                self.assertFalse(valid)
+                self.assertEqual(reason, "non_public_ip")
+
+    def test_validate_asset_url_rejects_non_public_ip_literals(self):
+        for host in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.1.1",
+            "192.0.2.1",
+            "224.0.0.1",
+            "0.0.0.0",
+            "[::1]",
+            "[fc00::1]",
+            "[fe80::1]",
+            "[2001:db8::1]",
+            "[ff02::1]",
+            "[::]",
+        ]:
+            with self.subTest(host=host):
+                valid, reason = self.fetch_buyer_assets.validate_asset_url(f"https://{host}/logo.png")
+
+                self.assertFalse(valid)
+                self.assertEqual(reason, "non_public_ip")
+
+    def test_validate_asset_url_resolves_hostnames_and_rejects_non_public_answers(self):
+        dns_answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443)),
+        ]
+
+        with patch("socket.getaddrinfo", return_value=dns_answers) as getaddrinfo:
+            valid, reason = self.fetch_buyer_assets.validate_asset_url("https://cdn.acme.com/logo.png")
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "non_public_ip")
+        getaddrinfo.assert_called_once()
+
+    def test_validate_asset_url_fails_closed_when_hostname_resolution_fails(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror):
+            valid, reason = self.fetch_buyer_assets.validate_asset_url("https://cdn.acme.com/logo.png")
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "host_resolution_failed")
+
+    def test_validate_asset_url_allows_same_site_cdn_subdomain_after_www_normalization(self):
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+        with patch("socket.getaddrinfo", return_value=dns_answers):
+            valid, reason = self.fetch_buyer_assets.validate_asset_url(
+                "https://CDN.Acme.com/logo.png",
+                base_host="www.acme.com",
+            )
+
+        self.assertTrue(valid)
+        self.assertEqual(reason, "")
+
+    def test_validate_asset_url_rejects_different_site_after_www_normalization(self):
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+        with patch("socket.getaddrinfo", return_value=dns_answers):
+            valid, reason = self.fetch_buyer_assets.validate_asset_url(
+                "https://cdn.evil-example.com/logo.png",
+                base_host="https://www.acme.com",
+            )
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "different_host")
 
     def test_validate_asset_url_rejects_official_redirect_to_different_host(self):
         valid, reason = self.fetch_buyer_assets.validate_asset_url(
@@ -254,7 +336,9 @@ class AssetFetchingRegressionTests(unittest.TestCase):
                 self.fetch_buyer_assets.decode_data_uri_limited("data:text/plain,abcdef", 5)
 
     def test_curl_max_filesize_exit_raises_response_too_large(self):
-        with patch(
+        with patch("socket.getaddrinfo", return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]), patch(
             "subprocess.run",
             return_value=SimpleNamespace(returncode=63, stderr=b"Maximum file size exceeded", stdout=b""),
         ):
