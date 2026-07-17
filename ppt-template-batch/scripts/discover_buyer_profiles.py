@@ -154,7 +154,6 @@ def pad_or_trim_bio(text: str) -> str:
     allowed_punctuation = "\uff0c\u3002\u3001\uff1b\uff1a"
     chars = [ch for ch in raw if "\u4e00" <= ch <= "\u9fff" or ch in allowed_punctuation]
     result = "".join(chars).strip("\uff0c\u3001\uff1a")
-    result = re.sub(r"(?:\u91c7\u8d2d\u7a33\u5b9a\u3002){2,}", "\u91c7\u8d2d\u8ba1\u5212\u7a33\u5b9a\uff0c\u5408\u4f5c\u9700\u6c42\u660e\u786e\u3002", result)
 
     # A fixed-length response may already have been cut in the middle of a
     # clause. Keep only complete sentences before adding the required padding.
@@ -181,16 +180,35 @@ def pad_or_trim_bio(text: str) -> str:
     if result and result[-1] not in "\u3002\uff1b":
         result += "\u3002"
 
-    fillers = ("该企业重视设备精度、交付效率和长期售后支持。", "采购计划稳定，合作需求明确。", "具备持续采购能力。")
-    short_fillers = ("采购稳定。", "需求明确。", "合作持续。")
+    neutral_fact_terms = ("\u4f4d\u4e8e", "\u603b\u90e8", "\u5f53\u5730", "\u4e3b\u8425", "\u63d0\u4f9b", "\u751f\u4ea7", "\u9500\u552e", "\u670d\u52a1", "\u4ea7\u54c1", "\u4e1a\u52a1", "\u7ecf\u8425", "\u8986\u76d6", "\u4e13\u6ce8")
+    procurement_claim_terms = ("\u91c7\u8d2d", "\u5408\u4f5c", "\u9700\u6c42", "\u8ba2\u5355", "\u4ea4\u4ed8", "\u552e\u540e", "\u80fd\u529b", "\u8ba1\u5212", "\u610f\u5411")
+    fillers: list[str] = []
+    for sentence in re.findall(r"[^\u3002\uff1b]+[\u3002\uff1b]", result):
+        source_facts = [sentence]
+        source_facts.extend(f"{clause}\u3002" for clause in re.split(r"[\uff0c\u3001\uff1b]", sentence.rstrip("\u3002\uff1b")) if clause)
+        for fact in source_facts:
+            normalized_fact = fact.strip("\uff0c\u3001\uff1b\uff1a")
+            if (
+                normalized_fact
+                and not any(term in normalized_fact for term in procurement_claim_terms)
+                and any(term in normalized_fact for term in neutral_fact_terms)
+                and normalized_fact not in fillers
+            ):
+                fillers.append(normalized_fact)
+
+    # Only repeat neutral facts already present in the source; never add a
+    # procurement judgment or a business claim that the source did not make.
     filler_index = 0
-    while chinese_char_count(result) < 120:
-        filler = fillers[filler_index % len(fillers)]
-        if chinese_char_count(result + filler) <= 130:
-            result += filler
+    while chinese_char_count(result) < 120 and fillers:
+        for offset in range(len(fillers)):
+            index = (filler_index + offset) % len(fillers)
+            filler = fillers[index]
+            if chinese_char_count(result + filler) <= 130:
+                result += filler
+                filler_index = index + 1
+                break
         else:
-            result += short_fillers[filler_index % len(short_fillers)]
-        filler_index += 1
+            break
 
     return result
 
@@ -253,11 +271,29 @@ def infer_concrete_products(context: str) -> list[str]:
     return []
 
 
+BUYER_EVIDENCE_FIELDS = ("bio", "demand_scenarios", "research_notes", "evidence")
+
+
+def buyer_evidence_context(item: dict[str, Any]) -> str:
+    return " ".join(str(item.get(key, "") or "") for key in BUYER_EVIDENCE_FIELDS)
+
+
 def refine_buyer_products(value: str, procurement_need: str, context: str = "") -> str:
     """Keep buyer products concrete and prevent global/category-level copy-through."""
     product = normalize_products(value, procurement_need)
     requested = split_product_items(procurement_need)
     returned = split_product_items(product)
+    matches_global_request = bool(requested) and len(returned) == len(requested) and set(returned) == set(requested)
+    if matches_global_request:
+        evidence = re.sub(r"\s+", "", context or "")
+        ranked = sorted(
+            ((item, evidence.count(item)) for item in requested),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        selected = [item for item, hits in ranked if hits > 0][:3]
+        return "\u3001".join(selected) if selected else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
+
     specific_returned = [item for item in returned if not is_generic_product(item)]
     if specific_returned and len(specific_returned) != len(returned):
         return "\u3001".join(specific_returned[:3])
@@ -269,23 +305,7 @@ def refine_buyer_products(value: str, procurement_need: str, context: str = "") 
         return "\u3001".join(inferred) if inferred else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
     if len(requested) <= 3 or not requested:
         return product
-    returned_set = set(returned)
-    copied_all = product == normalize_products(procurement_need, procurement_need) or set(requested).issubset(returned_set)
-    if not copied_all:
-        return product
-
-    evidence = re.sub(r"\s+", "", context or "")
-    ranked = sorted(
-        ((item, evidence.count(item)) for item in requested),
-        key=lambda pair: pair[1],
-        reverse=True,
-    )
-    selected = [item for item, hits in ranked if hits > 0][:3]
-    if not selected:
-        # A model-only provider may not return demand evidence. Keep the
-        # result usable but deliberately narrower than the global request.
-        selected = requested[:2]
-    return "\u3001".join(selected)
+    return product
 
 
 def build_strategy_text(strategy: dict[str, Any] | None) -> str:
@@ -775,10 +795,7 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
         products = refine_buyer_products(
             item.get("products", ""),
             str(research_meta.get("procurement_need", "")),
-            " ".join(
-                str(item.get(key, "") or "")
-                for key in ("bio", "demand_scenarios", "research_notes", "evidence")
-            ),
+            buyer_evidence_context(item),
         )
         if products == "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907":
             notes = (notes + "\uff1b\u5f53\u524d\u516c\u5f00\u8bc1\u636e\u4ec5\u80fd\u786e\u8ba4\u5230\u54c1\u7c7b\u7ea7\uff0c\u9700\u4eba\u5de5\u6838\u5b9e\u5177\u4f53\u91c7\u8d2d\u8bbe\u5907\u3002").strip("\uff1b")

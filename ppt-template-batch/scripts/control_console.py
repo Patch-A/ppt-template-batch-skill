@@ -22,7 +22,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from discover_buyer_profiles import normalize_products, pad_or_trim_bio, refine_buyer_products
+from discover_buyer_profiles import buyer_evidence_context, normalize_products, pad_or_trim_bio, refine_buyer_products
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -1240,7 +1240,7 @@ class ConsoleState:
                 item["products"] = refine_buyer_products(
                     item["products"],
                     procurement_need,
-                    " ".join(str(item.get(key, "") or "") for key in ("bio", "demand_scenarios", "research_notes", "evidence")),
+                    buyer_evidence_context(item),
                 )
                 item["bio"] = pad_or_trim_bio(item["bio"])
                 if item["products"] == "需核实具体设备":
