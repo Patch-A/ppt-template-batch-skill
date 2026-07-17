@@ -40,6 +40,7 @@ Choose the local presentation engine, validate required data and mappings, then 
 - `ppt-template-batch/`: the Codex skill package.
 - `ppt-template-batch/scripts/`: reusable PPT decomposition, text filling, image placement, diagnostics, and buyer preset scripts.
 - `ppt-template-batch/references/`: workflow rules for generic PPT batch processing and buyer-specific presets.
+- `yitu-quanjie/`: the optional "一图全解" exhibition-poster preset and its replacement script.
 - `scripts/run_ppt_batch_pipeline.py`: generic one-click pipeline for config-driven PPT filling.
 - `scripts/run_control_console.py`: local browser control console for project setup, editing, and export.
 - `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
@@ -94,6 +95,26 @@ The console does not require API keys for every project. API keys are only neede
 - Intelligent template analysis is optional; current template decomposition and export use local rules by default.
 
 Buyer research defaults to `model_only`, which uses OpenAI-compatible `/chat/completions` and works with DeepSeek, Qwen, GLM, Kimi, SiliconFlow, OpenRouter, Ollama, LM Studio, and custom compatible endpoints. OpenAI built-in web search is an explicit opt-in mode, not the default.
+
+### Feishu/Aily agent skill package
+
+The `feishu-agent-skill/` folder is a portable Aily-compatible skill root for Feishu bots and other agents that support a root-level SKILL.md. It uses the agent's native web search, image search, native slide editing, and image-generation abilities, so users do not need to enter a model API Key or install Python dependencies. The ZIP intentionally contains only SKILL.md and references/ files:
+
+```powershell
+python scripts/build_feishu_agent_skill.py --output output/ppt-template-batch-agent-skill.zip
+```
+
+Import the generated ZIP through Aily's local skill upload flow. Do not unpack it into a parent folder or require manifest.json/engine/. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order. The desktop Python/PPTX engine remains available from the repository root for local runs.
+
+Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-agent-skill/references/buyer-board-workflow-changelog.md`](feishu-agent-skill/references/buyer-board-workflow-changelog.md). The checklist covers stale multi-run text, dynamic content-row sizing, complete repeated-slide cloning, exact-enterprise Logo verification, and no-fabrication fallbacks.
+
+The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md`](feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md). It adds fixed-style protection for content titles and footer prompts, safe original-run replacement, explicit style-override opt-in, and model-selection guidance.
+
+### 一图全解 preset
+
+Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.
+
+For deterministic local replacement, use `yitu-quanjie/scripts/yitu_quanjie_replace.py` with JSON mappings for shape names and optional table cells. It is separate from the buyer-board preset and does not change the generic PPT workflow.
 
 ## Supported modes
 
@@ -265,11 +286,13 @@ The report checks:
 - Playwright and Chromium runtime
 - PowerPoint COM automation
 
-If Python `urllib` requests are blocked but `curl` works, enable:
+Python requests now fall back to the system `curl` executable automatically when available. To force the old behavior, set:
 
 ```powershell
-$env:BUYER_BOARD_ENABLE_CURL_FALLBACK="1"
+$env:BUYER_BOARD_DISABLE_CURL_FALLBACK="1"
 ```
+
+Asset mode is intentionally staged: `auto` uses lightweight HTML parsing first, extracts real inline header SVG logos, and only enables the Playwright path when `$env:BUYER_BOARD_ENABLE_BROWSER_FALLBACK="1"` is explicitly set. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
 
 ## Buyer asset recovery
 
@@ -310,7 +333,10 @@ Depending on the workflow, the workspace may contain:
 - Arbitrary PPT templates still require first-run decomposition and mapping verification.
 - The generic runner supports common shape, table, placeholder, repeated-slide, and image-slot patterns; unusual animations, SmartArt, charts, and complex grouped objects may still need a custom filler.
 - Public website asset fetching is best-effort and depends on local network permissions.
-- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight.
+- Logo selection rejects certification seals, government badges, banners, unrelated business units, subsidiary brands, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
+- Buyer-board procurement products are normalized to concrete purchasable equipment rather than umbrella categories. Product and bio table rows are sized from actual text length so short values do not retain oversized blank rows.
+- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight. Enable it only for sites whose light HTML pass reports a missing asset.
+- `asset_fetch_report.json` records `logo_confidence`, `logo_source`, `logo_url`, rejected candidates, and timeout/network notes for manual review.
 - AI right-side visual fallback is opt-in and does not generate logos.
 - When no verified image is available, the workflow should clear risky stale placeholders rather than inventing fake brand assets.
 

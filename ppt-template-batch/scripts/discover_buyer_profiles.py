@@ -208,6 +208,86 @@ def normalize_products(value: str, procurement_need: str) -> str:
     return product
 
 
+def split_product_items(value: str) -> list[str]:
+    text = re.sub(r"\s+", "", value or "")
+    text = re.sub(r"^(?:\u91c7\u8d2d\u4ea7\u54c1|\u91c7\u8d2d\u54c1\u7c7b|\u91c7\u8d2d\u9700\u6c42)[:\uff1a]", "", text)
+    text = re.sub(r"\u7b49(?:\u5305\u88c5\u5236\u54c1|\u4ea7\u54c1|\u8bbe\u5907)?$", "", text)
+    return [item.strip("\u3001\uff0c,;\uff1b") for item in re.split(r"[\u3001\uff0c,;\uff1b/]+", text) if item.strip("\u3001\uff0c,;\uff1b")]
+
+
+GENERIC_PRODUCT_TERMS = {
+    "\u5546\u7528\u53a8\u623f\u8bbe\u5907", "\u98df\u54c1\u52a0\u5de5\u8bbe\u5907", "\u4e2d\u592e\u53a8\u623f\u7cfb\u7edf",
+    "\u9910\u996e\u8bbe\u5907", "\u53a8\u623f\u8bbe\u5907", "\u98df\u54c1\u673a\u68b0", "\u5305\u88c5\u8bbe\u5907",
+    "\u5de5\u4e1a\u8bbe\u5907", "\u81ea\u52a8\u5316\u8bbe\u5907", "\u4f20\u52a8\u8bbe\u5907", "\u6db2\u538b\u8bbe\u5907",
+    "\u7535\u6c14\u8bbe\u5907", "\u914d\u5957\u8bbe\u5907", "\u6574\u5957\u7cfb\u7edf", "\u53a8\u623f\u7cfb\u7edf",
+}
+CONCRETE_PRODUCT_HINTS = (
+    "\u5207\u83dc\u673a", "\u5207\u8089\u673a", "\u7ede\u8089\u673a", "\u5207\u7247\u673a", "\u6d17\u83dc\u673a", "\u6d17\u7897\u673a",
+    "\u548c\u9762\u673a", "\u6405\u62cc\u673a", "\u70e4\u7bb1", "\u84b8\u7bb1", "\u6cb9\u70b8\u673a", "\u5c01\u53e3\u673a",
+    "\u8d34\u6807\u673a", "\u5305\u88c5\u673a", "\u8f93\u9001\u673a", "\u51b7\u67dc", "\u5236\u51b7\u673a\u7ec4", "\u6df7\u5408\u673a",
+    "\u7535\u673a", "\u6c34\u6cf5", "\u51cf\u901f\u673a", "\u98ce\u673a", "\u8f74\u627f", "\u94fe\u6761",
+)
+
+
+def is_generic_product(item: str) -> bool:
+    normalized = item.strip("\u3001\uff0c,;\uff1b")
+    return normalized in GENERIC_PRODUCT_TERMS or any(
+        normalized == term or normalized.endswith(term) for term in GENERIC_PRODUCT_TERMS
+    )
+
+
+def infer_concrete_products(context: str) -> list[str]:
+    evidence = re.sub(r"\s+", "", context or "")
+    hits = [item for item in CONCRETE_PRODUCT_HINTS if item in evidence]
+    if hits:
+        return hits[:3]
+    rules = (
+        (("\u4e2d\u592e\u53a8\u623f", "\u9910\u996e\u96c6\u56e2", "\u9910\u996e\u670d\u52a1", "\u9910\u5385"), ("\u5207\u83dc\u673a", "\u5207\u8089\u673a")),
+        (("\u8089\u5236\u54c1", "\u5c60\u5bb0", "\u9c9c\u8089"), ("\u7ede\u8089\u673a", "\u5207\u8089\u673a")),
+        (("\u852c\u83dc", "\u51c0\u83dc"), ("\u5207\u83dc\u673a", "\u6d17\u83dc\u673a")),
+        (("\u70d8\u7119", "\u9762\u5305", "\u7cd5\u70b9"), ("\u548c\u9762\u673a", "\u70e4\u7bb1")),
+    )
+    for keywords, products in rules:
+        if any(keyword in evidence for keyword in keywords):
+            return list(products)
+    return []
+
+
+def refine_buyer_products(value: str, procurement_need: str, context: str = "") -> str:
+    """Keep buyer products concrete and prevent global/category-level copy-through."""
+    product = normalize_products(value, procurement_need)
+    requested = split_product_items(procurement_need)
+    returned = split_product_items(product)
+    specific_returned = [item for item in returned if not is_generic_product(item)]
+    if specific_returned and len(specific_returned) != len(returned):
+        return "\u3001".join(specific_returned[:3])
+    if not returned:
+        inferred = infer_concrete_products(context)
+        return "\u3001".join(inferred) if inferred else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
+    if all(is_generic_product(item) for item in returned):
+        inferred = infer_concrete_products(context)
+        return "\u3001".join(inferred) if inferred else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
+    if len(requested) <= 3 or not requested:
+        return product
+    returned_set = set(returned)
+    copied_all = product == normalize_products(procurement_need, procurement_need) or set(requested).issubset(returned_set)
+    if not copied_all:
+        return product
+
+    evidence = re.sub(r"\s+", "", context or "")
+    ranked = sorted(
+        ((item, evidence.count(item)) for item in requested),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    selected = [item for item, hits in ranked if hits > 0][:3]
+    if not selected:
+        # A model-only provider may not return demand evidence. Keep the
+        # result usable but deliberately narrower than the global request.
+        selected = requested[:2]
+    return "\u3001".join(selected)
+
+
 def build_strategy_text(strategy: dict[str, Any] | None) -> str:
     strategy = strategy or {}
     preferred_industries = str(strategy.get("preferred_industries", "") or "").strip()
@@ -250,6 +330,8 @@ Scoring dimensions, each from 0 to 100:
 
 For motors, for example, prioritize local manufacturers whose products or production lines require motors, factories with motor-driven machinery, utilities, mines, logistics facilities, EPC/integrators, industrial maintenance companies, and verified importers/distributors. Do not select a company merely because it operates in a broad industrial category.
 
+The products field must name equipment at purchasing level, not an umbrella category. Use concrete items such as "\u5207\u83dc\u673a、\u5207\u8089\u673a", "\u7ede\u8089\u673a、\u548c\u9762\u673a", "\u5546\u7528\u70e4\u7bb1、\u6d17\u7897\u673a", or "\u8d34\u6807\u673a、\u5c01\u53e3\u673a". Do not return only phrases such as "\u5546\u7528\u53a8\u623f\u8bbe\u5907、\u98df\u54c1\u52a0\u5de5\u8bbe\u5907、\u4e2d\u592e\u53a8\u623f\u7cfb\u7edf". Infer the exact item from the company's facilities, production line, menu/service model, maintenance scope, or distribution catalog; if evidence is insufficient, mark the item for manual verification instead of presenting a broad category as a confirmed purchase.
+
 Candidate pool:
 {json.dumps(candidates or [], ensure_ascii=False)}
 
@@ -270,6 +352,9 @@ Selection rules:
 - Do not list a manufacturer only because it is in the same industry. A manufacturer is valid only when it likely purchases the requested product as production equipment, process equipment, components, consumables, spare parts, or resale inventory.
 - Exclude or downgrade direct competing OEMs whose main business is making and selling the same requested product, unless public business fit suggests importing/distribution or internal use.
 - The products field must be one to three concrete product names separated by Chinese commas, such as "五轴联动加工中心、五轴精密铣削中心". Never include verbs, "用于", processing scenarios, or a full sentence in this field.
+- Product names must be equipment-level and specific. Reject a result that contains only umbrella terms such as "\u5546\u7528\u53a8\u623f\u8bbe\u5907、\u98df\u54c1\u52a0\u5de5\u8bbe\u5907、\u4e2d\u592e\u53a8\u623f\u7cfb\u7edf"; replace them with concrete machines justified by the buyer's own operations, such as "\u5207\u83dc\u673a、\u5207\u8089\u673a" or "\u7ede\u8089\u673a、\u548c\u9762\u673a".
+- Do not copy the full Procurement need into every buyer. For each company, select only the one to three products that its factories, operations, projects, maintenance work, or resale business would actually buy. The product list must vary when the business scenarios differ.
+- The demand_scenarios and evidence must justify the exact products selected for that company; a generic statement that it needs packaging or equipment is insufficient.
 - demand_scenarios must explain exactly where and why the requested product is needed.
 - import_signal must summarize public import/distribution/foreign-sourcing evidence, or be empty when no evidence is available.
 - evidence must summarize the strongest qualification evidence.
@@ -687,12 +772,22 @@ def normalize_buyers(buyers: list[dict[str, Any]], country: str, research_meta: 
         source_urls = item.get("source_urls")
         if not isinstance(source_urls, list):
             source_urls = []
+        products = refine_buyer_products(
+            item.get("products", ""),
+            str(research_meta.get("procurement_need", "")),
+            " ".join(
+                str(item.get(key, "") or "")
+                for key in ("bio", "demand_scenarios", "research_notes", "evidence")
+            ),
+        )
+        if products == "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907":
+            notes = (notes + "\uff1b\u5f53\u524d\u516c\u5f00\u8bc1\u636e\u4ec5\u80fd\u786e\u8ba4\u5230\u54c1\u7c7b\u7ea7\uff0c\u9700\u4eba\u5de5\u6838\u5b9e\u5177\u4f53\u91c7\u8d2d\u8bbe\u5907\u3002").strip("\uff1b")
         normalized.append(
             {
                 "name": (item.get("name") or "").strip(),
                 "country": country,
                 "website": normalize_website(item.get("website", "")),
-                "products": normalize_products(item.get("products", ""), str(research_meta.get("procurement_need", ""))),
+                "products": products,
                 "bio": pad_or_trim_bio(item.get("bio", "")),
                 "logo_path": "",
                 "site_image_path": "",

@@ -3,11 +3,17 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.util import Inches
+
+
+EMU_PER_INCH = 914400
+EMU_PER_POINT = 12700
 
 
 def load_json(path: Path) -> Any:
@@ -43,22 +49,42 @@ def copy_font(source_run, target_run) -> None:
             pass
 
 
-def replace_text(text_frame, value: str) -> None:
-    source_paragraph = text_frame.paragraphs[0]
-    source_run = get_first_run(source_paragraph)
-    alignment = source_paragraph.alignment
+def safe_replace_text_frame(text_frame, value: str) -> bool:
+    """Replace text inside the original run so template effects stay intact."""
+    if not text_frame.paragraphs:
+        return False
 
+    first_run = get_first_run(text_frame.paragraphs[0])
+    if first_run is None:
+        first_run = text_frame.paragraphs[0].add_run()
+
+    for paragraph_index, paragraph in enumerate(text_frame.paragraphs):
+        for run_index, run in enumerate(paragraph.runs):
+            if paragraph_index == 0 and run_index == 0:
+                continue
+            run.text = ""
+    first_run.text = value
+    return True
+
+
+def safe_replace_shape_text(shape, value: str) -> bool:
+    """Replace only the text of a title/footer/fixed text shape."""
+    if not getattr(shape, "has_text_frame", False):
+        return False
+    return safe_replace_text_frame(shape.text_frame, value)
+
+
+def replace_text(text_frame, value: str) -> None:
+    if safe_replace_text_frame(text_frame, value):
+        return
     text_frame.clear()
-    paragraph = text_frame.paragraphs[0]
-    paragraph.alignment = alignment
-    run = paragraph.add_run()
-    run.text = value
-    copy_font(source_run, run)
+    text_frame.paragraphs[0].add_run().text = value
 
 
 def set_shape_text(slide, shape_index: int, value: str) -> None:
     shape = get_shape(slide, shape_index)
-    replace_text(shape.text_frame, value)
+    if not safe_replace_shape_text(shape, value):
+        raise ValueError(f"Shape {shape_index} does not have a usable text frame")
 
 
 def set_table_cell(table, row: int, col: int, value: str) -> None:
@@ -71,6 +97,71 @@ def apply_override_color(shape_or_cell, rgb_hex: str) -> None:
     for paragraph in text_frame.paragraphs:
         for run in paragraph.runs:
             run.font.color.rgb = RGBColor.from_string(rgb_hex)
+
+
+def cell_font_size_pt(cell, default: float = 16.0) -> float:
+    for paragraph in cell.text_frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size is not None:
+                return float(run.font.size.pt)
+    return default
+
+
+def weighted_text_length(text: str) -> float:
+    total = 0.0
+    for char in text:
+        if char == "\n":
+            continue
+        if "\u4e00" <= char <= "\u9fff" or char in "\uff0c\u3002\u3001\uff1b\uff1a\uff08\uff09":
+            total += 1.0
+        elif char.isspace():
+            total += 0.3
+        else:
+            total += 0.55
+    return total
+
+
+def estimate_text_lines(cell, column_width: int, value: str) -> int:
+    font_size = cell_font_size_pt(cell)
+    usable_width = max(
+        Inches(0.5),
+        column_width - int(cell.margin_left or 0) - int(cell.margin_right or 0),
+    )
+    capacity = max(8.0, (usable_width / EMU_PER_INCH) * 72.0 / (font_size * 0.95))
+    logical_lines = str(value or "").splitlines() or [""]
+    return max(1, sum(max(1, math.ceil(weighted_text_length(line) / capacity)) for line in logical_lines))
+
+
+def content_row_height(cell, column_width: int, value: str, value_key: str) -> int:
+    lines = estimate_text_lines(cell, column_width, value)
+    font_size = cell_font_size_pt(cell)
+    vertical_margin_pt = (int(cell.margin_top or 0) + int(cell.margin_bottom or 0)) / EMU_PER_POINT
+    height_inches = (lines * font_size * 1.25 + vertical_margin_pt + 2.0) / 72.0
+    minimum = 0.42 if value_key == "products" else 0.78
+    maximum = 1.45 if value_key == "products" else 2.6
+    return Inches(max(minimum, min(maximum, height_inches)))
+
+
+def adjust_dynamic_row_heights(table_shape, fields: list[dict[str, Any]], buyer: dict[str, Any], enabled: bool) -> None:
+    if not enabled:
+        return
+    table = table_shape.table
+    for field in fields:
+        value_key = str(field.get("value_key", ""))
+        if value_key not in {"products", "bio"}:
+            continue
+        row_index = int(field["row"])
+        value_col = int(field.get("value_column", 1))
+        value = str(buyer.get(value_key, "") or "")
+        cell = table.cell(row_index, value_col)
+        cell.text_frame.word_wrap = True
+        table.rows[row_index].height = content_row_height(
+            cell,
+            table.columns[value_col].width,
+            value,
+            value_key,
+        )
+    table_shape.height = sum(int(row.height) for row in table.rows)
 
 
 def duplicate_slide(presentation: Presentation, source_index: int):
@@ -138,6 +229,7 @@ def fill_content_slides(
     table_shape_index = content_config["table_shape_index"]
     title_shape_index = content_config["title_shape_index"]
     fields = content_config["fields"]
+    preserve_title = content_config.get("preserve_title", True)
 
     available_content_slides = len(presentation.slides) - start_slide_index + 1
     if len(buyers) > available_content_slides:
@@ -147,9 +239,11 @@ def fill_content_slides(
 
     for offset, buyer in enumerate(buyers):
         slide = presentation.slides[start_slide_index - 1 + offset]
-        set_shape_text(slide, title_shape_index, content_title)
+        if not preserve_title:
+            set_shape_text(slide, title_shape_index, content_title)
 
-        table = get_shape(slide, table_shape_index).table
+        table_shape = get_shape(slide, table_shape_index)
+        table = table_shape.table
         for field in fields:
             row = int(field["row"])
             label_col = int(field.get("label_column", 0))
@@ -162,10 +256,18 @@ def fill_content_slides(
                 set_table_cell(table, row, label_col, label)
             set_table_cell(table, row, value_col, value)
 
-            if "label_color" in field:
-                apply_override_color(table.cell(row, label_col), field["label_color"])
-            if "value_color" in field:
-                apply_override_color(table.cell(row, value_col), field["value_color"])
+            if content_config.get("allow_style_overrides", False):
+                if "label_color" in field:
+                    apply_override_color(table.cell(row, label_col), field["label_color"])
+                if "value_color" in field:
+                    apply_override_color(table.cell(row, value_col), field["value_color"])
+
+        adjust_dynamic_row_heights(
+            table_shape,
+            fields,
+            buyer,
+            bool(content_config.get("dynamic_row_height", True)),
+        )
 
 
 def main() -> int:

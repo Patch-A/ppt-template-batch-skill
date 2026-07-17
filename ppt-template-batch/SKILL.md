@@ -38,6 +38,11 @@ python scripts/control_console.py
 ~~~
 
 Keep the existing native PPTX template pipeline as the export engine. Use the console for preset selection, form entry, buyer research, session-only provider/model configuration, upstream model-list fetching, inspection, export, and run reporting. Treat Generic PPT as the default project type; use Buyer Board and Buyer Briefing only as presets.
+
+## Portable agent package
+
+For Feishu/Aily or another agent with native search, image, and slide capabilities, use the repository-level `feishu-agent-skill/` entrypoint. It is intentionally provider-neutral and does not ask the user for a model API Key or local Python dependencies. Build the Aily-compatible ZIP with `scripts/build_feishu_agent_skill.py`; the package contains a root-level SKILL.md and references/ only. Keep the desktop Python/PPTX engine separate for local runs.
+
 ## Workflow
 
 ### 1. Identify the template family
@@ -130,7 +135,9 @@ Use `scripts/fill_ppt_from_records.py` for generic text, table, placeholder, ima
 Treat images as a separate pass:
 
 - replace only approved placeholder slots
-- Asset fetching should stay bounded: use light HTML fetching by default, keep browser fallback opt-in for slow sites, and rely on `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
+- Asset fetching should stay bounded: use light HTML fetching by default, extract official inline SVG marks when available, keep browser fallback explicitly opt-in for slow sites, and enforce a per-buyer timeout. Use `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
+- Never accept a logo solely because its filename contains `logo`: reject certification seals, government badges, sale-notice marks, banners, and low-confidence brand mismatches. Prefer a verified official brand mark, and leave the Logo slot empty when confidence is insufficient.
+- Match the exact enterprise, not only the website domain: reject subsidiary and business-unit logos when the requested profile is for the parent company.
 - do not overwrite fixed design imagery
 - fit logos without distortion
 - crop or pad right-side visuals before placement so they do not overflow
@@ -161,6 +168,10 @@ Preserve qualification details in buyer records:
 - `evidence`
 - `source_urls`
 - `fit_score`, `demand_score`, `import_score`, `verification_score`, `total_score`
+
+For multi-product research, `products` must be a buyer-specific one-to-three-item subset justified by `demand_scenarios` and `evidence`; never copy the full global procurement request into every buyer. Use equipment-level names such as `切菜机、切肉机`, not category-level phrases such as `商用厨房设备、食品加工设备、中央厨房系统`. If public evidence is insufficient, mark the field for manual verification instead of presenting a broad category as a confirmed purchase.
+
+For buyer-board tables, keep fixed identity rows unchanged and dynamically size the `products` and `bio` rows from actual line count. Preserve the template font and cell margins, update the table shape height, and do not move or overwrite the fixed header/footer. Replace titles and footer prompts inside their original shape/run; style overrides are opt-in only through `content.allow_style_overrides: true` for explicitly approved content fields.
 - `confidence`
 - `risks`
 
@@ -221,6 +232,8 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
   Use only for buyer-board profile pages with one buyer per slide.
 - `references/buyer-briefing-rules.md`
   Use only for compact buyer-briefing pages with one category and 6 buyers per slide.
+- `references/buyer-board-workflow-changelog.md`
+  Use as a regression checklist when a buyer-board export shows stale template text, incorrect row heights, incomplete repeated pages, or unreliable Logo assets.
 - `scripts/generate_layout_config.py`
   Use when turning a reference PPT into a starter `layout-config.json`.
 - `scripts/fill_ppt_from_records.py`
