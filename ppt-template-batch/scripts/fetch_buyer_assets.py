@@ -135,6 +135,10 @@ def _hostname_without_www(hostname: str) -> str:
     return host
 
 
+def _looks_like_ip_literal(host: str) -> bool:
+    return ":" in host or bool(re.fullmatch(r"\d+(?:\.\d+){3}", host))
+
+
 def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
     try:
         parsed = urlparse(url)
@@ -148,6 +152,8 @@ def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        if _looks_like_ip_literal(host):
+            return False, "invalid_ip_literal"
         address = None
     if address and (address.is_private or address.is_loopback or address.is_link_local):
         return False, "private_network_target"
@@ -203,9 +209,21 @@ def decode_data_uri_limited(src: str, max_bytes: int) -> tuple[bytes, str]:
         except binascii.Error as exc:
             raise ValueError("invalid_data_uri") from exc
     else:
-        if len(payload) > max_bytes * 3:
-            raise ValueError("response_too_large")
-        body = unquote_to_bytes(payload)
+        chunks: list[bytes] = []
+        total = 0
+        index = 0
+        while index < len(payload):
+            if payload[index] == "%" and index + 2 < len(payload):
+                piece = unquote_to_bytes(payload[index:index + 3])
+                index += 3
+            else:
+                piece = payload[index].encode("ascii", errors="replace")
+                index += 1
+            total += len(piece)
+            if total > max_bytes:
+                raise ValueError("response_too_large")
+            chunks.append(piece)
+        body = b"".join(chunks)
     if len(body) > max_bytes:
         raise ValueError("response_too_large")
     return body, content_type
@@ -288,6 +306,8 @@ def fetch_url_with_curl(
                 capture_output=True,
                 timeout=timeout + 2,
         )
+        if result.returncode == 63:
+            raise ValueError("response_too_large")
         if result.returncode != 0:
             raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
         metadata = result.stdout.decode("utf-8", errors="replace").splitlines()
@@ -1287,8 +1307,7 @@ def process_buyer(
     cached = cache.get(cache_key)
     cached_logo = Path(str(cached.get("logo_path", ""))) if isinstance(cached, dict) and cached.get("logo_path") else None
     cached_site = Path(str(cached.get("site_image_path", ""))) if isinstance(cached, dict) and cached.get("site_image_path") else None
-    cache_paths_exist = (cached_logo is None or cached_logo.is_file()) and (cached_site is None or cached_site.is_file())
-    valid_cache = isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION and cache_paths_exist
+    valid_cache = isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION
     cached_logo_present = valid_cache and cached_logo is not None and cached_logo.is_file()
     cached_site_present = valid_cache and cached_site is not None and cached_site.is_file()
     if valid_cache and cached_logo_present and cached_site_present:

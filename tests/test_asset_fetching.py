@@ -89,6 +89,119 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             self.assertEqual(report["site_source"], "official")
             self.assertTrue(site_path.is_file())
 
+    def test_site_cache_entry_survives_stale_logo_and_retries_only_logo(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            stale_logo_path = root / "missing-logo.png"
+            site_path = root / "assets" / "acme-site.jpg"
+            site_path.parent.mkdir(parents=True, exist_ok=True)
+            site_path.write_bytes(b"cached site")
+            cache = {
+                "https://acme.com": {
+                    "asset_logic_version": self.fetch_buyer_assets.ASSET_LOGIC_VERSION,
+                    "logo_path": str(stale_logo_path),
+                    "site_image_path": str(site_path),
+                    "site_source": "official",
+                }
+            }
+            logo_path = root / "assets" / "acme-logo.svg"
+            logo = self.AssetCandidate(
+                src="https://acme.com/assets/acme-logo.svg",
+                page="https://acme.com",
+                kind="image",
+                origin="official",
+                score=40,
+            )
+
+            def download(candidate, output_path, kind):
+                self.assertEqual(kind, "logo")
+                logo_path.write_bytes(b"<svg></svg>")
+                return logo_path, {"bytes": logo_path.stat().st_size}
+
+            with patch.object(
+                self.fetch_buyer_assets,
+                "discover_assets_for_domain",
+                return_value=("https://acme.com", [logo], [], ["logo:recovered"]),
+            ), patch.object(self.fetch_buyer_assets, "download_asset", side_effect=download), patch.object(
+                self.fetch_buyer_assets, "prepare_site_image"
+            ) as prepare:
+                buyer, report = self.fetch_buyer_assets.process_buyer(
+                    {"name": "Acme", "website": "https://acme.com"},
+                    root / "assets",
+                    cache,
+                    enable_ai_visual_fallback=False,
+                    asset_mode="light",
+                    browser_timeout_ms=1000,
+                )
+
+            prepare.assert_not_called()
+            self.assertEqual(buyer["site_image_path"], str(site_path))
+            self.assertEqual(cache["https://acme.com"]["site_image_path"], str(site_path))
+            self.assertEqual(cache["https://acme.com"]["logo_path"], str(logo_path))
+            self.assertTrue(report["logo_hit"])
+            self.assertTrue(report["site_hit"])
+
+    def test_logo_cache_entry_survives_stale_site_and_retries_only_site(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            logo_path = root / "assets" / "acme-logo.svg"
+            logo_path.parent.mkdir(parents=True, exist_ok=True)
+            logo_path.write_bytes(b"<svg></svg>")
+            stale_site_path = root / "missing-site.jpg"
+            cache = {
+                "https://acme.com": {
+                    "asset_logic_version": self.fetch_buyer_assets.ASSET_LOGIC_VERSION,
+                    "logo_path": str(logo_path),
+                    "site_image_path": str(stale_site_path),
+                    "logo_confidence": "high",
+                    "logo_source": "official",
+                    "logo_url": "https://acme.com/assets/acme-logo.svg",
+                }
+            }
+            site_path = root / "assets" / "acme-site.jpg"
+            visual = self.AssetCandidate(
+                src="https://acme.com/assets/conveyor-line.jpg",
+                page="https://acme.com",
+                kind="image",
+                origin="official",
+                score=30,
+            )
+
+            def download(candidate, output_path, kind):
+                self.assertEqual(kind, "site")
+                site_path.write_bytes(b"recovered site")
+                return site_path, {"bytes": site_path.stat().st_size}
+
+            with patch.object(
+                self.fetch_buyer_assets,
+                "discover_assets_for_domain",
+                return_value=("https://acme.com", [], [visual], ["site:recovered"]),
+            ), patch.object(self.fetch_buyer_assets, "download_asset", side_effect=download), patch.object(
+                self.fetch_buyer_assets,
+                "prepare_site_image",
+                return_value=SimpleNamespace(output_path=site_path, mode="test", retention=1.0, upscale=False),
+            ):
+                buyer, report = self.fetch_buyer_assets.process_buyer(
+                    {"name": "Acme", "website": "https://acme.com"},
+                    root / "assets",
+                    cache,
+                    enable_ai_visual_fallback=False,
+                    asset_mode="light",
+                    browser_timeout_ms=1000,
+                )
+
+            self.assertEqual(buyer["logo_path"], str(logo_path))
+            self.assertEqual(cache["https://acme.com"]["logo_path"], str(logo_path))
+            self.assertEqual(cache["https://acme.com"]["site_image_path"], str(site_path))
+            self.assertTrue(report["logo_hit"])
+            self.assertTrue(report["site_hit"])
+
+    def test_validate_asset_url_rejects_invalid_ip_literals(self):
+        valid, reason = self.fetch_buyer_assets.validate_asset_url("http://999.999.999.999/logo.png")
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "invalid_ip_literal")
+
     def test_validate_asset_url_rejects_private_network_targets(self):
         valid, reason = self.fetch_buyer_assets.validate_asset_url("http://127.0.0.1/logo.png")
 
@@ -129,6 +242,24 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "response_too_large"):
             self.fetch_buyer_assets.decode_data_uri_limited(f"data:image/svg+xml;base64,{payload}", 5)
+
+    def test_decode_percent_data_uri_limited_rejects_incrementally(self):
+        def fail_full_decode(payload):
+            if payload == "abcdef":
+                raise AssertionError("must not decode full oversized data URI payload")
+            return payload.encode("ascii")
+
+        with patch.object(self.fetch_buyer_assets, "unquote_to_bytes", side_effect=fail_full_decode):
+            with self.assertRaisesRegex(ValueError, "response_too_large"):
+                self.fetch_buyer_assets.decode_data_uri_limited("data:text/plain,abcdef", 5)
+
+    def test_curl_max_filesize_exit_raises_response_too_large(self):
+        with patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=63, stderr=b"Maximum file size exceeded", stdout=b""),
+        ):
+            with self.assertRaisesRegex(ValueError, "response_too_large"):
+                self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png", max_bytes=5)
 
     def test_logo_rejection_reason_uses_boundary_matching_and_not_page_url(self):
         candidate = self.AssetCandidate(
