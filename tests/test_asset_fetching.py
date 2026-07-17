@@ -304,26 +304,6 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("host", reason)
 
-    def test_read_response_limited_rejects_oversize_without_unbounded_read(self):
-        class FakeResponse:
-            def __init__(self, chunks):
-                self._chunks = list(chunks)
-                self.calls = []
-
-            def read(self, size=-1):
-                self.calls.append(size)
-                if size in (-1, None):
-                    raise AssertionError("response.read() must stay bounded")
-                return self._chunks.pop(0) if self._chunks else b""
-
-        response = FakeResponse([b"1234", b"56"])
-
-        with self.assertRaisesRegex(ValueError, "response_too_large"):
-            self.fetch_buyer_assets.read_response_limited(response, 5)
-
-        self.assertTrue(response.calls)
-        self.assertTrue(all(size not in (-1, None) for size in response.calls))
-
     def test_decode_data_uri_limited_rejects_oversize_payload(self):
         payload = b64encode(b"abcdef").decode("ascii")
 

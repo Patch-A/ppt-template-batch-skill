@@ -330,34 +330,6 @@ def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
     return valid, reason
 
 
-def read_response_limited(response: Any, max_bytes: int) -> bytes:
-    length_header = ""
-    headers = getattr(response, "headers", None)
-    if headers is not None:
-        try:
-            length_header = str(headers.get("Content-Length") or headers.get("content-length") or "")
-        except Exception:
-            length_header = ""
-    if length_header:
-        try:
-            if int(length_header) > max_bytes:
-                raise ValueError("response_too_large")
-        except ValueError as exc:
-            if str(exc) == "response_too_large":
-                raise
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = response.read(min(64 * 1024, max_bytes - total + 1))
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise ValueError("response_too_large")
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def decode_data_uri_limited(src: str, max_bytes: int) -> tuple[bytes, str]:
     if not src.startswith("data:") or "," not in src:
         raise ValueError("invalid_data_uri")
@@ -803,42 +775,6 @@ def extract_search_links(base_url: str, html: str, domain: str) -> list[str]:
         if domain.lower() in host or any(social in host for social in SOCIAL_SOURCES) or any(m in host for m in MAP_HINTS):
             candidates.append(full)
     return candidates
-
-
-def search_candidate_pages(domain: str, buyer_name: str) -> list[tuple[str, str]]:
-    queries = [
-        f"site:{domain} {buyer_name} products",
-        f"site:{domain} {buyer_name} solutions",
-        f"site:{domain} {buyer_name} project",
-        f"{buyer_name} official linkedin",
-        f"{buyer_name} google maps",
-    ]
-    pages: list[tuple[str, str]] = []
-    for query in queries:
-        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-        try:
-            final_url, body, content_type = fetch_url(url)
-        except Exception:
-            continue
-        if not content_type.startswith("text/html"):
-            continue
-        html = body.decode("utf-8", errors="ignore")
-        for link in extract_search_links(final_url, html, domain):
-            host = urlparse(link).netloc.lower()
-            origin = "official"
-            if any(social in host for social in SOCIAL_SOURCES):
-                origin = "social"
-            elif any(m in host for m in MAP_HINTS):
-                origin = "maps"
-            pages.append((link, origin))
-    deduped = []
-    seen = set()
-    for link, origin in pages:
-        if link in seen:
-            continue
-        seen.add(link)
-        deduped.append((link, origin))
-    return deduped[:MAX_PAGE_CANDIDATES]
 
 
 def search_candidate_pages_with_notes(domain: str, buyer_name: str) -> tuple[list[tuple[str, str]], list[str]]:
