@@ -136,6 +136,50 @@ def _hostname_without_www(hostname: str) -> str:
     return host
 
 
+def _normalize_hostname(hostname: str) -> str:
+    host = (hostname or "").strip().strip("[]").rstrip(".")
+    if not host:
+        raise ValueError("invalid_host")
+    try:
+        address = _parse_ip_literal(host)
+    except ValueError as exc:
+        reason = "invalid_ip_literal" if _looks_like_ip_literal(host) else "invalid_host"
+        raise ValueError(reason) from exc
+    if address is not None:
+        return str(address)
+    try:
+        normalized = host.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("invalid_host") from exc
+    if not normalized:
+        raise ValueError("invalid_host")
+    return normalized
+
+
+def _normalize_asset_url(url: str) -> tuple[str, Any, str, int]:
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except Exception as exc:
+        raise ValueError("invalid_url") from exc
+    if not hostname:
+        raise ValueError("invalid_host")
+    host = _normalize_hostname(hostname)
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    userinfo = f"{parsed.netloc.rsplit('@', 1)[0]}@" if "@" in parsed.netloc else ""
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        if closing_bracket < 0:
+            raise ValueError("invalid_host")
+        port_suffix = authority[closing_bracket + 1:]
+    else:
+        port_suffix = authority[authority.rfind(":"):] if port is not None else ""
+    host_for_url = f"[{host}]" if ":" in host else host
+    normalized_url = parsed._replace(netloc=f"{userinfo}{host_for_url}{port_suffix}").geturl()
+    return normalized_url, parsed, host, port or (443 if parsed.scheme.lower() == "https" else 80)
+
+
 def _looks_like_ip_literal(host: str) -> bool:
     return ":" in host or bool(re.fullmatch(r"(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*", host, re.I))
 
@@ -175,39 +219,37 @@ def _same_site_host(observed: str, expected: str) -> bool:
 def _validate_and_resolve_asset_url(
     url: str,
     base_host: str = "",
-) -> tuple[bool, str, str, int, str]:
+) -> tuple[bool, str, str, str, int, str]:
     try:
-        parsed = urlparse(url)
-        parsed_hostname = parsed.hostname
-        port = parsed.port
-    except Exception:
-        return False, "invalid_url", "", 0, ""
+        normalized_url, parsed, host, port = _normalize_asset_url(url)
+    except ValueError as exc:
+        return False, str(exc), "", "", 0, ""
     if parsed.scheme.lower() not in {"http", "https"}:
-        return False, "invalid_scheme", "", 0, ""
-    if not parsed_hostname:
-        return False, "invalid_host", "", 0, ""
-    host = parsed_hostname.strip().strip("[]").lower().rstrip(".")
-    port = port or (443 if parsed.scheme.lower() == "https" else 80)
+        return False, "invalid_scheme", "", "", 0, ""
     if host == "localhost" or host.endswith(".localhost"):
-        return False, "local_host", "", 0, ""
+        return False, "local_host", "", "", 0, ""
     try:
         address = _parse_ip_literal(host)
     except ValueError:
         if _looks_like_ip_literal(host):
-            return False, "invalid_ip_literal", "", 0, ""
+            return False, "invalid_ip_literal", "", "", 0, ""
         address = None
     if address and not _is_public_address(address):
-        return False, "non_public_ip", "", 0, ""
+        return False, "non_public_ip", "", "", 0, ""
     if base_host:
-        expected = _hostname_without_www(urlparse(base_host if "://" in base_host else f"//{base_host}").hostname or base_host)
-        observed = _hostname_without_www(parsed_hostname)
+        try:
+            base_parsed = urlparse(base_host if "://" in base_host else f"//{base_host}")
+            expected = _hostname_without_www(_normalize_hostname(base_parsed.hostname or ""))
+        except ValueError:
+            return False, "invalid_host", "", "", 0, ""
+        observed = _hostname_without_www(host)
         if not _same_site_host(observed, expected):
-            return False, "different_host", "", 0, ""
+            return False, "different_host", "", "", 0, ""
     if address is None:
         try:
             resolved = socket.getaddrinfo(host, None)
         except OSError:
-            return False, "host_resolution_failed", "", 0, ""
+            return False, "host_resolution_failed", "", "", 0, ""
         resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
         try:
             for item in resolved:
@@ -216,17 +258,17 @@ def _validate_and_resolve_asset_url(
                     continue
                 resolved_addresses.append(ipaddress.ip_address(sockaddr[0]))
         except (IndexError, TypeError, ValueError):
-            return False, "host_resolution_failed", "", 0, ""
+            return False, "host_resolution_failed", "", "", 0, ""
         if not resolved_addresses:
-            return False, "host_resolution_failed", "", 0, ""
+            return False, "host_resolution_failed", "", "", 0, ""
         if any(not _is_public_address(item) for item in resolved_addresses):
-            return False, "non_public_ip", "", 0, ""
-        return True, "", host, port, str(resolved_addresses[0])
-    return True, "", host, port, ""
+            return False, "non_public_ip", "", "", 0, ""
+        return True, "", normalized_url, host, port, str(resolved_addresses[0])
+    return True, "", normalized_url, host, port, ""
 
 
 def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
-    valid, reason, _, _, _ = _validate_and_resolve_asset_url(url, base_host=base_host)
+    valid, reason, _, _, _, _ = _validate_and_resolve_asset_url(url, base_host=base_host)
     return valid, reason
 
 
@@ -310,24 +352,33 @@ def fetch_url_with_curl(
     base_host: str = "",
 ) -> tuple[str, bytes, str]:
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
-    if FETCH_DEADLINE is not None:
+    import subprocess
+
+    def hop_timeouts() -> tuple[float | int, float | int]:
+        if FETCH_DEADLINE is None:
+            return timeout, timeout + 2
         remaining = FETCH_DEADLINE - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("asset_fetch_per_buyer_timeout")
-        timeout = max(1, min(timeout, int(remaining)))
-    import subprocess
+        effective_timeout = min(float(timeout), remaining)
+        return effective_timeout, effective_timeout
 
-    redirect_base_host = base_host or (urlparse(url).hostname or "")
+    redirect_base_host = base_host
     current_url = url
     with tempfile.TemporaryDirectory() as temp_dir:
         body_path = Path(temp_dir) / "body"
         for hop in range(MAX_REDIRECT_HOPS + 1):
-            valid, reason, host, port, pinned_ip = _validate_and_resolve_asset_url(
+            hop_timeouts()
+            valid, reason, normalized_url, host, port, pinned_ip = _validate_and_resolve_asset_url(
                 current_url,
                 base_host=redirect_base_host,
             )
             if not valid:
                 raise ValueError(reason)
+            if not redirect_base_host:
+                redirect_base_host = host
+            current_url = normalized_url
+            curl_timeout, process_timeout = hop_timeouts()
             command = [
                 "curl",
                 "-q",
@@ -336,7 +387,7 @@ def fetch_url_with_curl(
                 "--silent",
                 "--show-error",
                 "--max-time",
-                str(timeout),
+                str(curl_timeout),
                 "--max-filesize",
                 str(max_bytes),
                 "-A",
@@ -353,7 +404,7 @@ def fetch_url_with_curl(
             result = subprocess.run(
                 command,
                 capture_output=True,
-                timeout=timeout + 2,
+                timeout=process_timeout,
             )
             if result.returncode == 63:
                 raise ValueError("response_too_large")
@@ -513,7 +564,7 @@ def normalized_identity_tokens(*values: str) -> set[str]:
 
 
 def logo_target(candidate: AssetCandidate) -> str:
-    return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind, candidate.page]).lower()
+    return " ".join([candidate_resource_filename(candidate), candidate.alt, candidate.cls]).lower()
 
 
 def candidate_resource_filename(candidate: AssetCandidate) -> str:
@@ -569,26 +620,18 @@ def score_logo_candidate(candidate: AssetCandidate, buyer_name: str = "", domain
         score += 4
     if "header" in target or "navbar" in target:
         score += 3
-    if candidate.src.lower().endswith(".svg"):
-        score += 2
     if candidate.origin == "official":
         score += 8
     else:
         score -= 4
     if candidate.origin == "maps":
         score -= 8
-    if candidate.kind == "inline-svg":
-        score += 6
     identity_tokens = normalized_identity_tokens(buyer_name, domain)
     observed_brand_tokens = candidate_brand_tokens(candidate)
     if identity_tokens.intersection(observed_brand_tokens):
         score += 28
     if logo_brand_mismatch(candidate, buyer_name, domain):
         score -= 40
-    elif candidate.kind == "inline-svg" and identity_tokens.intersection(normalized_identity_tokens(candidate.page)):
-        score += 18
-    elif candidate.kind != "inline-svg":
-        score -= 8
     if logo_rejection_reason(candidate):
         score -= 100
     return score
@@ -1405,13 +1448,13 @@ def main() -> int:
         "--asset-mode",
         choices=("light", "auto", "browser"),
         default="light",
-        help="light uses HTML parsing only, auto adds Playwright fallback when needed, browser uses Playwright-first fetching",
+        help="light uses controlled HTML fetching; browser and auto browser fallback are skipped for network safety",
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=8000,
-        help="per-page browser render timeout in milliseconds when Playwright-enhanced asset mode is enabled",
+        help="retained for CLI compatibility; browser navigation is skipped for network safety",
     )
     parser.add_argument(
         "--fetch-timeout-seconds",
@@ -1465,7 +1508,7 @@ def main() -> int:
                 "asset_mode": args.asset_mode,
                 "asset_logic_version": ASSET_LOGIC_VERSION,
                 "notes": ["skipped:asset_fetch_time_budget_exceeded"],
-                "elapsed_seconds": 0.0,
+                "elapsed_seconds": round(time.monotonic() - started, 2),
             })
             continue
         global FETCH_DEADLINE

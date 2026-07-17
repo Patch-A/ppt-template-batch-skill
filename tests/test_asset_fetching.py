@@ -1,4 +1,5 @@
 import importlib
+from io import StringIO
 import json
 import socket
 import sys
@@ -8,6 +9,7 @@ from base64 import b64encode
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -345,114 +347,23 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "response_too_large"):
                 self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png", max_bytes=5)
 
-    def _fake_playwright_without_network(self):
-        class FakePage:
-            def __init__(self):
-                self.goto_calls = []
-                self.url = ""
-
-            def goto(self, url, **_kwargs):
-                self.goto_calls.append(url)
-                self.url = url
-
-            def wait_for_load_state(self, *_args, **_kwargs):
-                return None
-
-            def wait_for_timeout(self, *_args, **_kwargs):
-                return None
-
-            def content(self):
-                return "<html></html>"
-
-        page = FakePage()
-
-        class FakeContext:
-            def new_page(self):
-                return page
-
-            def close(self):
-                return None
-
-        class FakeBrowser:
-            def new_context(self, **_kwargs):
-                return FakeContext()
-
-            def close(self):
-                return None
-
-        class FakePlaywrightManager:
-            def __enter__(self):
-                return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **_kwargs: FakeBrowser()))
-
-            def __exit__(self, *_args):
-                return False
-
-        return page, FakePlaywrightManager
-
-    def test_browser_mode_skips_unsafe_playwright_navigation(self):
-        page, fake_playwright_manager = self._fake_playwright_without_network()
-        rendered_payload = {
-            "icons": [],
-            "inlineSvgs": [],
-            "metaImages": [],
-            "images": [],
-            "backgrounds": [],
-            "links": [],
-        }
-
-        with patch.object(
-            self.fetch_buyer_assets,
-            "import_playwright",
-            return_value=(fake_playwright_manager, object()),
-        ), patch.object(
-            self.fetch_buyer_assets,
-            "extract_rendered_payload",
-            return_value=rendered_payload,
-        ), patch.object(
-            self.fetch_buyer_assets,
-            "search_candidate_pages_with_notes",
-            return_value=([], []),
-        ):
-            final_url, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain_browser(
-                "acme.com",
-                "Acme",
-                1000,
-            )
-
-        self.assertIsNone(final_url)
-        self.assertEqual(logos, [])
-        self.assertEqual(visuals, [])
-        self.assertEqual(page.goto_calls, [])
-        self.assertIn("browser_skip:network_unsafe", notes)
-
-    def test_render_page_skips_unsafe_playwright_navigation(self):
-        page, _ = self._fake_playwright_without_network()
-
-        final_url, logos, visuals, pages, notes = self.fetch_buyer_assets.render_page(
-            page,
-            "https://acme.com",
-            "official",
+    def test_browser_mode_skips_network_with_public_api(self):
+        final_url, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain_browser(
+            "acme.com",
+            "Acme",
             1000,
         )
 
         self.assertIsNone(final_url)
         self.assertEqual(logos, [])
         self.assertEqual(visuals, [])
-        self.assertEqual(pages, [])
-        self.assertEqual(page.goto_calls, [])
         self.assertIn("browser_skip:network_unsafe", notes)
 
-    def test_auto_mode_skips_unsafe_playwright_navigation(self):
-        page, fake_playwright_manager = self._fake_playwright_without_network()
-
+    def test_auto_mode_skips_network_with_public_api(self):
         with patch.object(
             self.fetch_buyer_assets,
             "discover_assets_for_domain_light",
             return_value=("https://acme.com", [], [], ["light:empty"]),
-        ), patch.object(
-            self.fetch_buyer_assets,
-            "import_playwright",
-            return_value=(fake_playwright_manager, object()),
         ), patch.object(
             self.fetch_buyer_assets,
             "get_env_var",
@@ -468,8 +379,18 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertEqual(final_url, "https://acme.com")
         self.assertEqual(logos, [])
         self.assertEqual(visuals, [])
-        self.assertEqual(page.goto_calls, [])
         self.assertIn("browser_skip:network_unsafe", notes)
+
+    def test_asset_mode_help_describes_browser_network_safety_skip(self):
+        stdout = StringIO()
+        with patch.object(sys, "argv", ["fetch_buyer_assets.py", "--help"]), patch.object(sys, "stdout", stdout):
+            with self.assertRaises(SystemExit) as exit_info:
+                self.fetch_buyer_assets.main()
+
+        self.assertEqual(exit_info.exception.code, 0)
+        help_output = " ".join(stdout.getvalue().split())
+        self.assertIn("browser and auto browser fallback are skipped for network safety", help_output)
+        self.assertIn("retained for CLI compatibility", help_output)
 
     def test_curl_disables_curlrc_and_proxies_before_connecting(self):
         commands = []
@@ -490,6 +411,90 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertEqual(commands[0][:2], ["curl", "-q"])
         self.assertEqual(commands[0][2:4], ["--noproxy", "*"])
         self.assertNotIn("-L", commands[0])
+
+    def test_curl_normalizes_tail_dot_hostname_before_pinning(self):
+        commands = []
+        normalized_url = "https://user:pass@acme.com:8443/logo.png?size=1#fragment"
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=f"{normalized_url}\n200\nimage/png\n".encode("utf-8"),
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers), patch("subprocess.run", side_effect=run_curl):
+            self.fetch_buyer_assets.fetch_url_with_curl(
+                "https://user:pass@AcMe.Com.:8443/logo.png?size=1#fragment"
+            )
+
+        resolve_entry = commands[0][commands[0].index("--resolve") + 1]
+        self.assertEqual(commands[0][-1], normalized_url)
+        self.assertEqual(urlparse(commands[0][-1]).hostname, resolve_entry.split(":", 1)[0])
+        self.assertEqual(resolve_entry, "acme.com:8443:93.184.216.34")
+
+    def test_curl_normalizes_idn_hostname_for_same_site_pinning(self):
+        commands = []
+        normalized_url = "https://cdn.xn--bcher-kva.example/logo.png"
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=f"{normalized_url}\n200\nimage/png\n".encode("utf-8"),
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("socket.getaddrinfo", return_value=dns_answers) as getaddrinfo, patch(
+            "subprocess.run",
+            side_effect=run_curl,
+        ):
+            self.fetch_buyer_assets.fetch_url_with_curl(
+                "https://cdn.BÜCHER.example./logo.png",
+                base_host="www.BÜCHER.example.",
+            )
+
+        resolve_entry = commands[0][commands[0].index("--resolve") + 1]
+        self.assertEqual(commands[0][-1], normalized_url)
+        self.assertEqual(urlparse(commands[0][-1]).hostname, resolve_entry.split(":", 1)[0])
+        self.assertEqual(resolve_entry, "cdn.xn--bcher-kva.example:443:93.184.216.34")
+        getaddrinfo.assert_called_once_with("cdn.xn--bcher-kva.example", None)
+
+    def test_redirect_chain_stops_before_second_connection_when_deadline_expires(self):
+        commands = []
+
+        def run_curl(command, **_kwargs):
+            commands.append(command)
+            if len(commands) > 1:
+                Path(command[command.index("-o") + 1]).write_bytes(b"logo")
+                stdout = b"https://cdn.acme.com/logo.png\n200\nimage/png\n"
+            else:
+                stdout = b"https://acme.com/logo.png\n302\ntext/html\nhttps://cdn.acme.com/logo.png"
+            return SimpleNamespace(
+                returncode=0,
+                stderr=b"",
+                stdout=stdout,
+            )
+
+        dns_answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        previous_deadline = self.fetch_buyer_assets.FETCH_DEADLINE
+        self.fetch_buyer_assets.FETCH_DEADLINE = 1.0
+        try:
+            with patch.object(self.fetch_buyer_assets.time, "monotonic", side_effect=[0.0, 0.0, 1.0]), patch(
+                "socket.getaddrinfo",
+                return_value=dns_answers,
+            ), patch("subprocess.run", side_effect=run_curl):
+                with self.assertRaisesRegex(TimeoutError, "asset_fetch_per_buyer_timeout"):
+                    self.fetch_buyer_assets.fetch_url_with_curl("https://acme.com/logo.png")
+        finally:
+            self.fetch_buyer_assets.FETCH_DEADLINE = previous_deadline
+
+        self.assertEqual(len(commands), 1)
 
     def test_curl_pins_hostname_to_validated_public_ip(self):
         commands = []
@@ -603,6 +608,33 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(self.fetch_buyer_assets.logo_rejection_reason(candidate), "")
+
+    def test_logo_ranking_uses_only_basename_alt_and_class_evidence(self):
+        directory_only = self.AssetCandidate(
+            src="https://acme.com/brand/logo/assets/image.svg?logo=1",
+            page="https://acme.com/logo",
+            kind="logo",
+            alt="",
+            cls="",
+            origin="official",
+        )
+        real_evidence = self.AssetCandidate(
+            src="https://acme.com/assets/image.svg",
+            page="https://acme.com",
+            kind="image",
+            alt="Acme logo",
+            cls="brand-mark",
+            origin="official",
+        )
+
+        ranked = self.fetch_buyer_assets.rank_logo_candidates(
+            [directory_only, real_evidence],
+            "Acme",
+            "acme.com",
+        )
+
+        self.assertNotIn(directory_only, ranked)
+        self.assertIn(real_evidence, ranked)
 
     def test_logo_rejection_ignores_url_directories_page_and_kind(self):
         candidate = self.AssetCandidate(
@@ -731,4 +763,5 @@ class AssetFetchingRegressionTests(unittest.TestCase):
             self.assertEqual(skipped["site_source"], "")
             self.assertEqual(skipped["notes"], ["skipped:asset_fetch_time_budget_exceeded"])
             self.assertEqual(set(skipped), set(normal))
-            self.assertEqual(skipped["elapsed_seconds"], 0.0)
+            self.assertEqual(normal["elapsed_seconds"], 1.0)
+            self.assertEqual(skipped["elapsed_seconds"], 12.0)
