@@ -31,18 +31,25 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
       "buyer_count": 10,
       "records": "可选，买家或业务数据",
       "allow_page_expand": true,
-      "need_images": true
+      "need_images": true,
+      "contract_version": "1.0"
     }
 
 当用户只提供“国家 + 采购需求”时，默认使用 buyer_board，先搜索并核验买家，再填入模板。用户提供已有买家资料时，不重复编造资料，先做字段整理和真实性风险标记。
 
-在飞书/Aily 中执行 buyer_board 时，先用智能体原生搜索生成并核验 buyers 数据，再把已整理的 buyers.json 交给 engine/scripts/run_buyer_board_pipeline.py 的已有数据模式。不要调用需要远程模型 Key 的自动检索 CLI。
+在飞书/Aily 中执行 buyer_board 时，先用智能体原生搜索生成并核验 buyers 数据，再用平台原生幻灯片能力处理已整理的 buyers 数据。不要调用需要远程模型 Key 的自动检索 CLI。
 
 ## 三种模式
 
 - generic：任何产品目录、公司介绍、报告、报价单、培训材料和重复卡片模板。
 - buyer_board：一页一个买家，通常包含企业名称、国家、官网、简介、采购产品、Logo 和右侧图片。
-- buyer_briefing：一页一个品类，通常每页 6 个买家；简介接近模板示例长度，采购品类必须使用模板要求的固定前缀。
+- buyer_briefing：一页一个品类，每页最多 6 个买家；超过 6 个时先把输入分成多个页面，简介接近模板示例长度，采购品类必须使用模板要求的固定前缀，未使用的槽位必须清空。
+
+## 通用映射与报告边界
+
+桌面端 generic 模式使用 `layout-config.json` 的 `schema_version: 2`。优先用 `selector: {"name": "...", "role": "..."}` 定位形状，`shape_index` 只作为兼容回退；旧版 schema 1 由桌面读取器在内存中规范化。Feishu/Aily 不调用桌面 filler，而是把等价的字段名、页面位置和固定元素约束交给原生幻灯片能力执行。
+
+无论模式如何，填充报告都应说明必填字段、缺失素材、残留模板文字、文本溢出、页数和导出可打开性；桌面 generic 报告使用 `ok`、`missing_required_fields`、`missing_assets`、`warnings`、`stale_template_text`、`capacity_warnings`、`slide_count_status`、`reopen_status` 和 `failed_records` 这些稳定字段。Feishu/Aily 额外保留本文件规定的 `contract_version`、`sources`、`verification_status` 和 `warnings`，不得用平台成功响应掩盖未核验内容。
 
 ## 原生模型使用规则
 
@@ -63,4 +70,20 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 - fill-report.json：记录页数、字段缺失、溢出、乱码和图片越界检查结果。
 - sources.json：记录企业资料、Logo、产品图和生图提示词的来源或状态。
 
+## Feishu/Aily 合同字段
+
+`contract_version` 是输入和输出都可携带的稳定合同版本，当前为字符串 `"1.0"`，缺省时按 `"1.0"` 处理，不影响旧输入。输出报告至少保留以下字段：
+
+- `sources`：来源记录数组；每条记录说明来源类型、链接或素材标识，以及 `verified`、`pending` 或 `unavailable` 状态。
+- `verification_status`：整体核验状态，只使用 `verified`、`partial`、`pending` 或 `failed`。
+- `warnings`：面向用户的可重试或待确认事项数组，不把未核验内容写成事实。
+
+飞书/Aily 版本使用平台原生搜索、图片、幻灯片和导出能力，并在填充报告中传递这些字段；不把 Python 引擎、`engine/` 目录或模型 API Key 作为 skill 包依赖。
+
 详细输入字段、图片筛选和失败处理规则见 references/agent-runtime.md。飞书/Aily 版本优先使用平台原生幻灯片创建、编辑和导出能力；不要寻找 engine/ 目录、requirements.txt 或远程模型 CLI。桌面端需要可重复脚本时，再使用仓库根目录中的确定性 PPT 引擎。
+
+当任务涉及公开 URL 时，只使用 `http`/`https`，不访问 localhost、回环、私有、链路本地或其他非公网地址，也不绕过平台对 DNS 和重定向的安全限制。桌面资产抓取器会对 DNS 结果逐一校验并固定公网地址，限制重定向为 5 跳、单次响应为 8 MiB；Feishu/Aily 不调用该下载器，无法确认的素材标记为 `pending` 或 `unavailable`。
+
+桌面端的 `asset_mode=browser` 和 `auto` browser fallback 仅保留 CLI 兼容性，均不启动 Playwright 或浏览器网络；安全跳过时记录 `browser_skip:network_unsafe`。Feishu/Aily 继续使用平台原生搜索、图片搜索/生图、幻灯片编辑和导出能力，不依赖该桌面资产路径。
+
+`yitu-quanjie/scripts/yitu_quanjie_replace.py --dry-run` 是桌面端确定性预检入口，只负责本地模板的 shape、表格坐标、容量、行高和输出路径校验，打印 JSON 且不创建输出文件；Feishu/Aily 任务应使用平台原生的页面校验和报告，不要把该 Python CLI 当作 portable skill 的依赖。

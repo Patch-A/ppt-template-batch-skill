@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import ipaddress
 import json
 import os
+import queue
 import re
+import socket
+import tempfile
 import time
+import threading
 import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import quote_plus, unquote_to_bytes, urljoin, urlparse
 
 from PIL import Image
 
@@ -80,18 +85,32 @@ MAX_PAGE_CANDIDATES = 10
 MIN_IMAGE_BYTES = 5 * 1024
 MIN_LOGO_BYTES = 512
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_RESPONSE_BYTES = MAX_IMAGE_BYTES
+STABLE_DOWNLOAD_FAILURE_REASONS = frozenset(
+    {
+        "invalid_scheme",
+        "invalid_host",
+        "invalid_ip_literal",
+        "host_resolution_failed",
+        "response_too_large",
+        "too_many_redirects",
+        "different_host",
+        "local_host",
+        "non_public_ip",
+    }
+)
 MIN_VISUAL_WIDTH = 240
 MIN_VISUAL_HEIGHT = 140
 MIN_LOGO_WIDTH = 60
 MIN_LOGO_HEIGHT = 20
-BROWSER_VIEWPORT_WIDTH = 1440
-BROWSER_VIEWPORT_HEIGHT = 1080
-BROWSER_WAIT_MS = 1200
-BROWSER_PAGE_LIMIT = 6
 FETCH_TIMEOUT_SECONDS = 8
+MAX_REDIRECT_HOPS = 5
 ASSET_LOGIC_VERSION = 4
 LOGO_MIN_SCORE = 10
 FETCH_DEADLINE: float | None = None
+_DNS_REQUEST_QUEUE = queue.Queue(maxsize=1)
+_DNS_WORKER: threading.Thread | None = None
+_DNS_WORKER_LOCK = threading.Lock()
 
 
 @dataclass
@@ -124,67 +143,336 @@ def candidate_base_urls(domain: str) -> list[str]:
     return [f"https://{clean}", f"http://{clean}"]
 
 
-def fetch_url(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
-    timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
-    if FETCH_DEADLINE is not None:
-        remaining = FETCH_DEADLINE - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        timeout = max(1, min(timeout, int(remaining)))
-    request = Request(url, headers={"User-Agent": USER_AGENT})
+def _hostname_without_www(hostname: str) -> str:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def _normalize_hostname(hostname: str) -> str:
+    host = (hostname or "").strip().strip("[]").rstrip(".")
+    if not host:
+        raise ValueError("invalid_host")
     try:
-        with urlopen(request, timeout=timeout) as response:
-            content_type = response.headers.get_content_type()
-            final_url = response.geturl()
-            body = response.read()
-        return final_url, body, content_type
-    except Exception as urllib_exc:
-        # Windows security software can block Python's socket while the native
-        # curl executable is still allowed. Keep the fallback automatic so an
-        # asset fetch does not depend on an undocumented environment switch.
-        if get_env_var("BUYER_BOARD_DISABLE_CURL_FALLBACK"):
+        address = _parse_ip_literal(host)
+    except ValueError as exc:
+        reason = "invalid_ip_literal" if _looks_like_ip_literal(host) else "invalid_host"
+        raise ValueError(reason) from exc
+    if address is not None:
+        return str(address)
+    try:
+        normalized = host.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as exc:
+        raise ValueError("invalid_host") from exc
+    if not normalized:
+        raise ValueError("invalid_host")
+    return normalized
+
+
+def _normalize_asset_url(url: str) -> tuple[str, Any, str, int]:
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except Exception as exc:
+        raise ValueError("invalid_url") from exc
+    if not hostname:
+        raise ValueError("invalid_host")
+    host = _normalize_hostname(hostname)
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    userinfo = f"{parsed.netloc.rsplit('@', 1)[0]}@" if "@" in parsed.netloc else ""
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        if closing_bracket < 0:
+            raise ValueError("invalid_host")
+        port_suffix = authority[closing_bracket + 1:]
+    else:
+        port_suffix = authority[authority.rfind(":"):] if port is not None else ""
+    host_for_url = f"[{host}]" if ":" in host else host
+    normalized_url = parsed._replace(netloc=f"{userinfo}{host_for_url}{port_suffix}").geturl()
+    return normalized_url, parsed, host, port or (443 if parsed.scheme.lower() == "https" else 80)
+
+
+def _looks_like_ip_literal(host: str) -> bool:
+    return ":" in host or bool(re.fullmatch(r"(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*", host, re.I))
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        if not _looks_like_ip_literal(host):
+            return None
+        if ":" in host:
             raise
         try:
-            return fetch_url_with_curl(url, timeout)
-        except Exception:
-            raise urllib_exc
+            return ipaddress.ip_address(socket.inet_aton(host))
+        except OSError as exc:
+            raise ValueError("invalid_ip_literal") from exc
 
 
-def fetch_url_with_curl(url: str, timeout: int | None = None) -> tuple[str, bytes, str]:
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        address.is_global
+        and not address.is_loopback
+        and not address.is_private
+        and not address.is_link_local
+        and not address.is_reserved
+        and not address.is_multicast
+        and not address.is_unspecified
+    )
+
+
+def _same_site_host(observed: str, expected: str) -> bool:
+    if not expected:
+        return True
+    return observed == expected or observed.endswith(f".{expected}")
+
+
+def _dns_worker() -> None:
+    while True:
+        host, response_queue, cancelled = _DNS_REQUEST_QUEUE.get()
+        if cancelled.is_set():
+            continue
+        try:
+            result = socket.getaddrinfo(host, None)
+            error = None
+        except Exception as exc:
+            result = None
+            error = exc
+        if not cancelled.is_set():
+            try:
+                response_queue.put_nowait((result, error))
+            except queue.Full:
+                pass
+
+
+def _ensure_dns_worker() -> None:
+    global _DNS_WORKER
+    with _DNS_WORKER_LOCK:
+        if _DNS_WORKER is not None and _DNS_WORKER.is_alive():
+            return
+        _DNS_WORKER = threading.Thread(target=_dns_worker, name="asset-dns", daemon=True)
+        _DNS_WORKER.start()
+
+
+def _resolve_hostname(host: str) -> list[Any]:
+    if FETCH_DEADLINE is None:
+        return socket.getaddrinfo(host, None)
+    remaining = FETCH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("asset_fetch_per_buyer_timeout")
+    _ensure_dns_worker()
+    response_queue = queue.Queue(maxsize=1)
+    cancelled = threading.Event()
+    try:
+        _DNS_REQUEST_QUEUE.put((host, response_queue, cancelled), timeout=remaining)
+    except queue.Full as exc:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout") from exc
+    remaining = FETCH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout")
+    try:
+        result, error = response_queue.get(timeout=remaining)
+    except queue.Empty as exc:
+        cancelled.set()
+        raise TimeoutError("asset_fetch_per_buyer_timeout") from exc
+    if error is not None:
+        raise error
+    return result
+
+
+def _validate_and_resolve_asset_url(
+    url: str,
+    base_host: str = "",
+) -> tuple[bool, str, str, str, int, str]:
+    try:
+        normalized_url, parsed, host, port = _normalize_asset_url(url)
+    except ValueError as exc:
+        return False, str(exc), "", "", 0, ""
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False, "invalid_scheme", "", "", 0, ""
+    if host == "localhost" or host.endswith(".localhost"):
+        return False, "local_host", "", "", 0, ""
+    try:
+        address = _parse_ip_literal(host)
+    except ValueError:
+        if _looks_like_ip_literal(host):
+            return False, "invalid_ip_literal", "", "", 0, ""
+        address = None
+    if address and not _is_public_address(address):
+        return False, "non_public_ip", "", "", 0, ""
+    if base_host:
+        try:
+            base_parsed = urlparse(base_host if "://" in base_host else f"//{base_host}")
+            expected = _hostname_without_www(_normalize_hostname(base_parsed.hostname or ""))
+        except ValueError:
+            return False, "invalid_host", "", "", 0, ""
+        observed = _hostname_without_www(host)
+        if not _same_site_host(observed, expected):
+            return False, "different_host", "", "", 0, ""
+    if address is None:
+        try:
+            resolved = _resolve_hostname(host)
+        except TimeoutError:
+            raise
+        except OSError:
+            return False, "host_resolution_failed", "", "", 0, ""
+        resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+        try:
+            for item in resolved:
+                sockaddr = item[4]
+                if not sockaddr:
+                    continue
+                resolved_addresses.append(ipaddress.ip_address(sockaddr[0]))
+        except (IndexError, TypeError, ValueError):
+            return False, "host_resolution_failed", "", "", 0, ""
+        if not resolved_addresses:
+            return False, "host_resolution_failed", "", "", 0, ""
+        if any(not _is_public_address(item) for item in resolved_addresses):
+            return False, "non_public_ip", "", "", 0, ""
+        return True, "", normalized_url, host, port, str(resolved_addresses[0])
+    return True, "", normalized_url, host, port, ""
+
+
+def validate_asset_url(url: str, base_host: str = "") -> tuple[bool, str]:
+    valid, reason, _, _, _, _ = _validate_and_resolve_asset_url(url, base_host=base_host)
+    return valid, reason
+
+
+def decode_data_uri_limited(src: str, max_bytes: int) -> tuple[bytes, str]:
+    if not src.startswith("data:") or "," not in src:
+        raise ValueError("invalid_data_uri")
+    header, payload = src.split(",", 1)
+    content_type = header[5:].split(";", 1)[0] or "text/plain"
+    if ";base64" in header.lower():
+        compact = "".join(payload.split())
+        padding = compact.count("=")
+        decoded_estimate = (len(compact) * 3) // 4 - padding
+        if decoded_estimate > max_bytes:
+            raise ValueError("response_too_large")
+        try:
+            body = base64.b64decode(compact, validate=True)
+        except binascii.Error as exc:
+            raise ValueError("invalid_data_uri") from exc
+    else:
+        chunks: list[bytes] = []
+        total = 0
+        index = 0
+        while index < len(payload):
+            if payload[index] == "%" and index + 2 < len(payload):
+                piece = unquote_to_bytes(payload[index:index + 3])
+                index += 3
+            else:
+                piece = payload[index].encode("ascii", errors="replace")
+                index += 1
+            total += len(piece)
+            if total > max_bytes:
+                raise ValueError("response_too_large")
+            chunks.append(piece)
+        body = b"".join(chunks)
+    if len(body) > max_bytes:
+        raise ValueError("response_too_large")
+    return body, content_type
+
+
+def fetch_url(
+    url: str,
+    timeout: int | None = None,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+    base_host: str = "",
+) -> tuple[str, bytes, str]:
+    return fetch_url_with_curl(url, timeout, max_bytes, base_host=base_host)
+
+
+def fetch_url_with_curl(
+    url: str,
+    timeout: int | None = None,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+    base_host: str = "",
+) -> tuple[str, bytes, str]:
     timeout = int(timeout or FETCH_TIMEOUT_SECONDS)
-    if FETCH_DEADLINE is not None:
+    import subprocess
+
+    def hop_timeouts() -> tuple[float | int, float | int]:
+        if FETCH_DEADLINE is None:
+            return timeout, timeout + 2
         remaining = FETCH_DEADLINE - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("asset_fetch_per_buyer_timeout")
-        timeout = max(1, min(timeout, int(remaining)))
-    import subprocess
+        effective_timeout = min(float(timeout), remaining)
+        return effective_timeout, effective_timeout
 
-    result = subprocess.run(
-        [
-            "curl",
-            "-L",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            str(timeout),
-            "-A",
-            USER_AGENT,
-            "-w",
-            "\n%{url_effective}\n%{content_type}",
-            url,
-        ],
-            capture_output=True,
-            timeout=timeout + 2,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
-    chunks = result.stdout.split(b"\n")
-    if len(chunks) < 3:
-        raise RuntimeError("curl response did not include metadata")
-    content_type = chunks[-1].decode("utf-8", errors="replace").split(";")[0].strip() or "application/octet-stream"
-    final_url = chunks[-2].decode("utf-8", errors="replace").strip() or url
-    body = b"\n".join(chunks[:-2])
-    return final_url, body, content_type
+    redirect_base_host = base_host
+    current_url = url
+    with tempfile.TemporaryDirectory() as temp_dir:
+        body_path = Path(temp_dir) / "body"
+        for hop in range(MAX_REDIRECT_HOPS + 1):
+            hop_timeouts()
+            valid, reason, normalized_url, host, port, pinned_ip = _validate_and_resolve_asset_url(
+                current_url,
+                base_host=redirect_base_host,
+            )
+            if not valid:
+                raise ValueError(reason)
+            if not redirect_base_host:
+                redirect_base_host = host
+            current_url = normalized_url
+            curl_timeout, process_timeout = hop_timeouts()
+            command = [
+                "curl",
+                "-q",
+                "--noproxy",
+                "*",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                str(curl_timeout),
+                "--max-filesize",
+                str(max_bytes),
+                "-A",
+                USER_AGENT,
+                "-o",
+                str(body_path),
+                "-w",
+                "%{url_effective}\n%{http_code}\n%{content_type}\n%{redirect_url}",
+            ]
+            if pinned_ip:
+                resolve_ip = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+                command.extend(["--resolve", f"{host}:{port}:{resolve_ip}"])
+            command.append(current_url)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=process_timeout,
+            )
+            if result.returncode == 63:
+                raise ValueError("response_too_large")
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+            metadata = result.stdout.decode("utf-8", errors="replace").split("\n", 3)
+            if len(metadata) < 4:
+                raise RuntimeError("curl response did not include metadata")
+            final_url = metadata[0].strip() or current_url
+            try:
+                status_code = int(metadata[1].strip())
+            except ValueError as exc:
+                raise RuntimeError("curl response did not include a status code") from exc
+            content_type = metadata[2].split(";")[0].strip() or "application/octet-stream"
+            redirect_url = metadata[3].strip()
+            if 300 <= status_code < 400 and redirect_url:
+                if hop >= MAX_REDIRECT_HOPS:
+                    raise ValueError("too_many_redirects")
+                current_url = urljoin(current_url, redirect_url)
+                continue
+            if body_path.stat().st_size > max_bytes:
+                raise ValueError("response_too_large")
+            body = body_path.read_bytes()
+            return final_url, body, content_type
+    raise RuntimeError("curl redirect loop did not terminate")
 
 
 class AssetHTMLParser(HTMLParser):
@@ -306,6 +594,7 @@ def normalized_identity_tokens(*values: str) -> set[str]:
         "identity", "image", "images", "icon", "favicon", "header", "navbar", "assets",
         "asset", "static", "media", "content", "inline", "desktop", "mobile", "light", "dark",
         "blue", "green", "red", "white", "black", "primary", "secondary", "horizontal", "vertical",
+        "rgb", "color", "colour", "mark", "symbol", "new", "year",
         "png", "jpg", "jpeg", "svg", "webp", "gif", "ico", "cms", "api", "cdn", "src",
     }
     for value in values:
@@ -317,24 +606,36 @@ def normalized_identity_tokens(*values: str) -> set[str]:
     return tokens
 
 
+def candidate_resource_filename(candidate: AssetCandidate) -> str:
+    if candidate.src.startswith("data:image/"):
+        return ""
+    return Path(urlparse(candidate.src).path).name
+
+
+def logo_evidence_target(candidate: AssetCandidate) -> str:
+    return " ".join([candidate_resource_filename(candidate), candidate.alt, candidate.cls]).lower()
+
+
 def logo_target(candidate: AssetCandidate) -> str:
-    return " ".join([candidate.src, candidate.alt, candidate.cls, candidate.kind, candidate.page]).lower()
+    return logo_evidence_target(candidate)
+
+
+def logo_rejection_target(candidate: AssetCandidate) -> str:
+    return logo_evidence_target(candidate)
 
 
 def logo_rejection_reason(candidate: AssetCandidate) -> str:
-    target = logo_target(candidate)
+    target = logo_rejection_target(candidate)
     normalized = unicodedata.normalize("NFKD", target)
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    if any(hint in normalized for hint in LOGO_REJECT_HINTS):
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    if tokens.intersection(LOGO_REJECT_HINTS):
         return "non_brand_badge_or_banner_hint"
     return ""
 
 
 def candidate_brand_tokens(candidate: AssetCandidate) -> set[str]:
-    src_name = ""
-    if not candidate.src.startswith("data:image/"):
-        src_name = Path(urlparse(candidate.src).path).name
-    tokens = normalized_identity_tokens(src_name, candidate.alt)
+    tokens = normalized_identity_tokens(candidate_resource_filename(candidate), candidate.alt, candidate.cls)
     return {
         token
         for token in tokens
@@ -366,26 +667,18 @@ def score_logo_candidate(candidate: AssetCandidate, buyer_name: str = "", domain
         score += 4
     if "header" in target or "navbar" in target:
         score += 3
-    if candidate.src.lower().endswith(".svg"):
-        score += 2
     if candidate.origin == "official":
         score += 8
     else:
         score -= 4
     if candidate.origin == "maps":
         score -= 8
-    if candidate.kind == "inline-svg":
-        score += 6
     identity_tokens = normalized_identity_tokens(buyer_name, domain)
     observed_brand_tokens = candidate_brand_tokens(candidate)
     if identity_tokens.intersection(observed_brand_tokens):
         score += 28
     if logo_brand_mismatch(candidate, buyer_name, domain):
         score -= 40
-    elif candidate.kind == "inline-svg" and identity_tokens.intersection(normalized_identity_tokens(candidate.page)):
-        score += 18
-    elif candidate.kind != "inline-svg":
-        score -= 8
     if logo_rejection_reason(candidate):
         score -= 100
     return score
@@ -455,18 +748,28 @@ def parse_page(base_url: str, html: str, origin: str = "official") -> tuple[list
     logo_candidates.extend(extract_inline_svg_logos(base_url, html, origin))
 
     for item in parser.link_icons:
-        logo_candidates.append(AssetCandidate(src=urljoin(base_url, item["src"]), page=base_url, kind=item["kind"], origin=origin))
+        candidate = AssetCandidate(
+            src=urljoin(base_url, item["src"]),
+            page=base_url,
+            kind=item["kind"],
+            cls=item.get("rel", ""),
+            origin=origin,
+        )
+        logo_candidates.append(candidate)
     for item in parser.images:
         full = urljoin(base_url, item["src"])
-        target = " ".join([item.get("src", ""), item.get("alt", ""), item.get("class", "")]).lower()
-        if any(hint in target for hint in LOGO_HINTS):
-            logo_candidates.append(
-                AssetCandidate(src=full, page=base_url, kind=item["kind"], alt=item.get("alt", ""), cls=item.get("class", ""), origin=origin)
-            )
+        candidate = AssetCandidate(
+            src=full,
+            page=base_url,
+            kind=item["kind"],
+            alt=item.get("alt", ""),
+            cls=item.get("class", ""),
+            origin=origin,
+        )
+        if any(hint in logo_evidence_target(candidate) for hint in LOGO_HINTS):
+            logo_candidates.append(candidate)
         else:
-            visual_candidates.append(
-                AssetCandidate(src=full, page=base_url, kind=item["kind"], alt=item.get("alt", ""), cls=item.get("class", ""), origin=origin)
-            )
+            visual_candidates.append(candidate)
     for item in parser.meta_images:
         visual_candidates.insert(0, AssetCandidate(src=urljoin(base_url, item["src"]), page=base_url, kind=item["kind"], origin=origin))
 
@@ -485,42 +788,6 @@ def extract_search_links(base_url: str, html: str, domain: str) -> list[str]:
         if domain.lower() in host or any(social in host for social in SOCIAL_SOURCES) or any(m in host for m in MAP_HINTS):
             candidates.append(full)
     return candidates
-
-
-def search_candidate_pages(domain: str, buyer_name: str) -> list[tuple[str, str]]:
-    queries = [
-        f"site:{domain} {buyer_name} products",
-        f"site:{domain} {buyer_name} solutions",
-        f"site:{domain} {buyer_name} project",
-        f"{buyer_name} official linkedin",
-        f"{buyer_name} google maps",
-    ]
-    pages: list[tuple[str, str]] = []
-    for query in queries:
-        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-        try:
-            final_url, body, content_type = fetch_url(url)
-        except Exception:
-            continue
-        if not content_type.startswith("text/html"):
-            continue
-        html = body.decode("utf-8", errors="ignore")
-        for link in extract_search_links(final_url, html, domain):
-            host = urlparse(link).netloc.lower()
-            origin = "official"
-            if any(social in host for social in SOCIAL_SOURCES):
-                origin = "social"
-            elif any(m in host for m in MAP_HINTS):
-                origin = "maps"
-            pages.append((link, origin))
-    deduped = []
-    seen = set()
-    for link, origin in pages:
-        if link in seen:
-            continue
-        seen.add(link)
-        deduped.append((link, origin))
-    return deduped[:MAX_PAGE_CANDIDATES]
 
 
 def search_candidate_pages_with_notes(domain: str, buyer_name: str) -> tuple[list[tuple[str, str]], list[str]]:
@@ -562,254 +829,6 @@ def search_candidate_pages_with_notes(domain: str, buyer_name: str) -> tuple[lis
         seen.add(link)
         deduped.append((link, origin))
     return deduped[:MAX_PAGE_CANDIDATES], notes
-
-
-def import_playwright() -> Any:
-    try:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:
-        raise RuntimeError(f"playwright_unavailable:{exc.__class__.__name__}") from exc
-    return sync_playwright, PlaywrightTimeoutError
-
-
-def rendered_payload_to_candidates(
-    base_url: str,
-    payload: dict[str, Any],
-    origin: str,
-) -> tuple[list[AssetCandidate], list[AssetCandidate], list[str]]:
-    logo_candidates: list[AssetCandidate] = []
-    visual_candidates: list[AssetCandidate] = []
-
-    for item in payload.get("icons", []):
-        src = item.get("src") or ""
-        if not src:
-            continue
-        logo_candidates.append(
-            AssetCandidate(
-                src=urljoin(base_url, src),
-                page=base_url,
-                kind=item.get("kind", "icon"),
-                cls=item.get("rel", ""),
-                origin=origin,
-            )
-        )
-
-    for item in payload.get("inlineSvgs", []):
-        src = item.get("src") or ""
-        if not src:
-            continue
-        logo_candidates.append(
-            AssetCandidate(
-                src=src,
-                page=base_url,
-                kind="inline-svg",
-                alt=item.get("alt", "brand logo"),
-                cls=item.get("className", ""),
-                origin=origin,
-            )
-        )
-
-    for item in payload.get("images", []):
-        src = item.get("src") or ""
-        if not src:
-            continue
-        candidate = AssetCandidate(
-            src=urljoin(base_url, src),
-            page=base_url,
-            kind=item.get("kind", "image"),
-            alt=item.get("alt", ""),
-            cls=item.get("className", ""),
-            origin=origin,
-        )
-        target = " ".join(
-            [
-                src,
-                item.get("alt", ""),
-                item.get("className", ""),
-                item.get("id", ""),
-                item.get("selectorHint", ""),
-            ]
-        ).lower()
-        if any(hint in target for hint in LOGO_HINTS):
-            logo_candidates.append(candidate)
-        else:
-            visual_candidates.append(candidate)
-
-    for item in payload.get("metaImages", []):
-        src = item.get("src") or ""
-        if not src:
-            continue
-        visual_candidates.insert(
-            0,
-            AssetCandidate(
-                src=urljoin(base_url, src),
-                page=base_url,
-                kind=item.get("kind", "meta"),
-                origin=origin,
-            ),
-        )
-
-    for item in payload.get("backgrounds", []):
-        src = item.get("src") or ""
-        if not src:
-            continue
-        visual_candidates.append(
-            AssetCandidate(
-                src=urljoin(base_url, src),
-                page=base_url,
-                kind="background",
-                cls=" ".join([item.get("className", ""), item.get("selectorHint", "")]).strip(),
-                origin=origin,
-            )
-        )
-
-    page_urls: list[str] = []
-    for item in payload.get("links", []):
-        href = item.get("href") or ""
-        full = urljoin(base_url, href)
-        if not same_host(base_url, full):
-            continue
-        joined_hint = f"{href} {item.get('hint', '')}".lower()
-        if any(hint in joined_hint for hint in PAGE_HINTS):
-            page_urls.append(full)
-
-    return logo_candidates, visual_candidates, dedupe(page_urls)[:MAX_PAGE_CANDIDATES]
-
-
-def extract_rendered_payload(page: Any) -> dict[str, Any]:
-    return page.evaluate(
-        """
-        () => {
-          const absolute = (value) => {
-            if (!value) return "";
-            try {
-              return new URL(value, document.baseURI).href;
-            } catch (error) {
-              return value;
-            }
-          };
-          const pickBackgroundUrl = (value) => {
-            if (!value || !value.includes("url(")) return "";
-            const match = value.match(/url\\((['"]?)(.*?)\\1\\)/i);
-            return match ? absolute(match[2]) : "";
-          };
-          const icons = [];
-          document.querySelectorAll("link[rel]").forEach((el) => {
-            const rel = (el.getAttribute("rel") || "").toLowerCase();
-            const href = el.getAttribute("href") || "";
-            if (href && (rel.includes("icon") || rel.includes("logo"))) {
-              icons.push({ src: absolute(href), kind: "icon", rel });
-            }
-          });
-          const metaImages = [];
-          document.querySelectorAll("meta[property], meta[name]").forEach((el) => {
-            const key = (el.getAttribute("property") || el.getAttribute("name") || "").toLowerCase();
-            const content = el.getAttribute("content") || "";
-            if (content && (key === "og:image" || key === "twitter:image")) {
-              metaImages.push({ src: absolute(content), kind: "meta" });
-            }
-          });
-          const images = [];
-          document.querySelectorAll("img").forEach((el) => {
-            const src =
-              el.currentSrc ||
-              el.getAttribute("src") ||
-              el.getAttribute("data-src") ||
-              el.getAttribute("data-lazy-src") ||
-              "";
-            if (!src) return;
-            images.push({
-              src: absolute(src),
-              alt: el.getAttribute("alt") || "",
-              className: el.getAttribute("class") || "",
-              id: el.getAttribute("id") || "",
-              selectorHint: [el.tagName, el.closest("header,nav,main,section,figure,a,div")?.tagName || ""].join(" "),
-              kind: "image",
-            });
-          });
-          const inlineSvgs = [];
-          document.querySelectorAll("header svg, nav svg").forEach((el) => {
-            const box = el.getBoundingClientRect();
-            if (box.width < 60 || box.height < 15 || box.width * box.height < 1200) return;
-            const markup = el.outerHTML || "";
-            if (!markup) return;
-            let encoded = "";
-            try {
-              encoded = btoa(unescape(encodeURIComponent(markup)));
-            } catch (error) {
-              return;
-            }
-            inlineSvgs.push({
-              src: "data:image/svg+xml;base64," + encoded,
-              alt: "brand logo",
-              className: el.getAttribute("class") || "",
-            });
-          });
-          const backgrounds = [];
-          document.querySelectorAll("header, nav, main, section, figure, a, div").forEach((el) => {
-            const style = getComputedStyle(el);
-            const bg = pickBackgroundUrl(style.backgroundImage || "");
-            if (!bg) return;
-            backgrounds.push({
-              src: bg,
-              className: el.getAttribute("class") || "",
-              selectorHint: [el.tagName, el.getAttribute("id") || ""].join(" "),
-            });
-          });
-          const links = [];
-          document.querySelectorAll("a[href]").forEach((el) => {
-            const href = el.getAttribute("href") || "";
-            if (!href) return;
-            links.push({
-              href: absolute(href),
-              hint: [
-                el.getAttribute("title") || "",
-                el.getAttribute("aria-label") || "",
-                (el.textContent || "").trim().slice(0, 80),
-              ].join(" "),
-            });
-          });
-          return { icons, inlineSvgs, metaImages, images, backgrounds, links };
-        }
-        """
-    )
-
-
-def render_page(
-    page: Any,
-    target_url: str,
-    origin: str,
-    timeout_ms: int,
-) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str], list[str]]:
-    notes: list[str] = []
-    try:
-        remaining = remaining_fetch_milliseconds()
-        if remaining is not None and remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        effective_timeout = min(timeout_ms, max(500, remaining or timeout_ms))
-        page.goto(target_url, wait_until="domcontentloaded", timeout=effective_timeout)
-        try:
-            page.wait_for_load_state("networkidle", timeout=min(effective_timeout, 4000))
-        except Exception:
-            notes.append(f"browser_networkidle_timeout:{target_url}")
-        remaining = remaining_fetch_milliseconds()
-        if remaining is not None and remaining <= 0:
-            raise TimeoutError("asset_fetch_per_buyer_timeout")
-        page.wait_for_timeout(min(BROWSER_WAIT_MS, remaining or BROWSER_WAIT_MS))
-        final_url = str(page.url)
-        html = page.content()
-        logo_candidates, visual_candidates, page_urls = parse_page(final_url, html, origin=origin)
-        rendered_payload = extract_rendered_payload(page)
-        extra_logos, extra_visuals, extra_pages = rendered_payload_to_candidates(final_url, rendered_payload, origin)
-        logo_candidates.extend(extra_logos)
-        visual_candidates.extend(extra_visuals)
-        page_urls.extend(extra_pages)
-        notes.append(f"browser_page:{final_url}:origin={origin}")
-        return final_url, logo_candidates, visual_candidates, dedupe(page_urls)[:MAX_PAGE_CANDIDATES], notes
-    except Exception as exc:
-        notes.append(f"browser_page_failed:{target_url}:{exc.__class__.__name__}:origin={origin}")
-        return None, [], [], [], notes
 
 
 def discover_assets_for_domain_light(
@@ -883,78 +902,7 @@ def discover_assets_for_domain_browser(
     buyer_name: str,
     timeout_ms: int,
 ) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
-    notes: list[str] = []
-    try:
-        sync_playwright, _ = import_playwright()
-    except RuntimeError as exc:
-        notes.append(str(exc))
-        return None, [], [], notes
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
-            user_agent=USER_AGENT,
-        )
-        page = context.new_page()
-        try:
-            all_logo_candidates: list[AssetCandidate] = []
-            all_visual_candidates: list[AssetCandidate] = []
-            resolved_url: str | None = None
-            page_urls: list[tuple[str, str]] = []
-
-            for base_url in candidate_base_urls(domain):
-                final_url, logos, visuals, discovered_pages, base_notes = render_page(page, base_url, "official", timeout_ms)
-                notes.extend(base_notes)
-                if not final_url:
-                    continue
-                resolved_url = final_url
-                all_logo_candidates.extend(logos)
-                all_visual_candidates.extend(visuals)
-                page_urls.extend((url, "official") for url in discovered_pages)
-                break
-
-            if not resolved_url:
-                return None, [], [], notes
-
-            search_pages, search_notes = search_candidate_pages_with_notes(domain, buyer_name)
-            notes.extend(search_notes)
-            page_urls.extend(search_pages)
-
-            seen = set()
-            processed = 0
-            for page_url, origin in page_urls:
-                if page_url in seen:
-                    continue
-                seen.add(page_url)
-                processed += 1
-                if processed > BROWSER_PAGE_LIMIT:
-                    notes.append(f"browser_page_limit:{BROWSER_PAGE_LIMIT}")
-                    break
-                final_url, logos, visuals, _, page_notes = render_page(page, page_url, origin, timeout_ms)
-                notes.extend(page_notes)
-                if not final_url:
-                    continue
-                all_logo_candidates.extend(logos)
-                all_visual_candidates.extend(visuals)
-
-            for item in all_visual_candidates:
-                item.score = score_visual_candidate(item)
-
-            ranked_logos = rank_logo_candidates(all_logo_candidates, buyer_name, domain)
-            for item in all_logo_candidates:
-                reason = logo_candidate_rejection_reason(item, buyer_name, domain) or ("low_score" if item.score < LOGO_MIN_SCORE else "")
-                if reason:
-                    notes.append(f"logo_rejected_candidate:{reason}:{item.src}")
-            ranked_visuals = sorted(
-                [item for item in dedupe_candidates(all_visual_candidates) if has_supported_extension(item.src)],
-                key=lambda item: item.score,
-                reverse=True,
-            )
-            return resolved_url, ranked_logos, ranked_visuals, notes
-        finally:
-            context.close()
-            browser.close()
+    return None, [], [], ["browser_skip:network_unsafe"]
 
 
 def inspect_downloaded_asset(path: Path) -> dict[str, Any]:
@@ -1010,11 +958,14 @@ def download_asset(candidate: AssetCandidate, output_path: Path, kind: str) -> t
     try:
         if candidate.src.startswith("data:image/svg+xml;base64,"):
             final_url = "inline-logo.svg"
-            body = base64.b64decode(candidate.src.split(",", 1)[1])
-            content_type = "image/svg+xml"
+            body, content_type = decode_data_uri_limited(candidate.src, MAX_IMAGE_BYTES)
         else:
-            final_url, body, content_type = fetch_url(candidate.src)
+            base_host = urlparse(candidate.page).hostname or ""
+            final_url, body, content_type = fetch_url(candidate.src, max_bytes=MAX_IMAGE_BYTES, base_host=base_host)
     except Exception as exc:
+        reason = str(exc)
+        if isinstance(exc, ValueError) and reason in STABLE_DOWNLOAD_FAILURE_REASONS:
+            return None, {"reason": reason}
         return None, {"reason": f"download_failed:{exc.__class__.__name__}"}
     if not content_type.startswith("image/"):
         return None, {"reason": f"not_image:{content_type}"}
@@ -1126,12 +1077,6 @@ def display_asset_source(src: str, page: str = "") -> str:
     return src if len(src) <= 240 else src[:237] + "..."
 
 
-def remaining_fetch_milliseconds() -> int | None:
-    if FETCH_DEADLINE is None:
-        return None
-    return max(0, int((FETCH_DEADLINE - time.monotonic()) * 1000))
-
-
 def process_buyer(
     buyer: dict[str, Any],
     assets_dir: Path,
@@ -1164,8 +1109,10 @@ def process_buyer(
     cached = cache.get(cache_key)
     cached_logo = Path(str(cached.get("logo_path", ""))) if isinstance(cached, dict) and cached.get("logo_path") else None
     cached_site = Path(str(cached.get("site_image_path", ""))) if isinstance(cached, dict) and cached.get("site_image_path") else None
-    cache_paths_exist = (cached_logo is None or cached_logo.is_file()) and (cached_site is None or cached_site.is_file())
-    if isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION and cache_paths_exist:
+    valid_cache = isinstance(cached, dict) and cached.get("asset_logic_version") == ASSET_LOGIC_VERSION
+    cached_logo_present = valid_cache and cached_logo is not None and cached_logo.is_file()
+    cached_site_present = valid_cache and cached_site is not None and cached_site.is_file()
+    if valid_cache and cached_logo_present and cached_site_present:
         buyer["logo_path"] = cached.get("logo_path", "")
         buyer["site_image_path"] = cached.get("site_image_path", "")
         buyer["asset_fetch_notes"] = cached.get("asset_fetch_notes", "cache_hit")
@@ -1186,54 +1133,68 @@ def process_buyer(
     )
     slug = slugify(str(buyer.get("name", "buyer")))
 
-    logo_path = ""
-    logo_url = ""
-    logo_source = ""
+    logo_path = str(cached.get("logo_path", "")) if cached_logo_present else ""
+    logo_url = str(cached.get("logo_url", "")) if cached_logo_present else ""
+    logo_source = str(cached.get("logo_source", "")) if cached_logo_present else ""
+    logo_confidence_value = str(cached.get("logo_confidence", "missing")) if cached_logo_present else "missing"
     logo_score = 0
-    site_image_path = ""
-    site_source = ""
+    site_image_path = str(cached.get("site_image_path", "")) if cached_site_present else ""
+    site_source = str(cached.get("site_source", "")) if cached_site_present else ""
     trace = list(notes)
+    if cached_logo_present:
+        trace.append("cache_hit:logo")
+        report["logo_hit"] = True
+        report["logo_confidence"] = logo_confidence_value
+        report["logo_source"] = logo_source
+        report["logo_url"] = logo_url
+    if cached_site_present:
+        trace.append("cache_hit:site")
+        report["site_hit"] = True
+        report["site_source"] = site_source
     report["logo_rejected_candidates"] = [
         note for note in trace if note.startswith("logo_rejected_candidate:")
     ][:12]
     if final_url:
         trace.append(f"resolved:{final_url}")
 
-    for candidate in logo_candidates[:8]:
-        downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-logo", "logo")
-        trace.append(f"logo_try:{display_asset_source(candidate.src, candidate.page)}:score={candidate.score}:origin={candidate.origin}")
-        if not downloaded:
-            trace.append(f"logo_reject:{candidate.src}:{meta}")
-        if downloaded:
-            logo_path = str(downloaded)
-            logo_url = display_asset_source(candidate.src, candidate.page)
-            logo_source = candidate.origin
-            logo_score = candidate.score
-            trace.append(f"logo:{display_asset_source(candidate.src, candidate.page)}")
-            trace.append(f"logo_meta:{meta}")
-            report["logo_hit"] = True
-            report["logo_confidence"] = logo_confidence(candidate.score)
-            report["logo_source"] = candidate.origin
-            report["logo_url"] = candidate.src
-            break
+    if not logo_path:
+        for candidate in logo_candidates[:8]:
+            downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-logo", "logo")
+            trace.append(f"logo_try:{display_asset_source(candidate.src, candidate.page)}:score={candidate.score}:origin={candidate.origin}")
+            if not downloaded:
+                trace.append(f"logo_reject:{candidate.src}:{meta}")
+            if downloaded:
+                logo_path = str(downloaded)
+                logo_url = display_asset_source(candidate.src, candidate.page)
+                logo_source = candidate.origin
+                logo_score = candidate.score
+                logo_confidence_value = logo_confidence(candidate.score)
+                trace.append(f"logo:{display_asset_source(candidate.src, candidate.page)}")
+                trace.append(f"logo_meta:{meta}")
+                report["logo_hit"] = True
+                report["logo_confidence"] = logo_confidence_value
+                report["logo_source"] = candidate.origin
+                report["logo_url"] = candidate.src
+                break
 
-    for candidate in visual_candidates[:12]:
-        downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-site", "site")
-        trace.append(f"site_try:{candidate.src}:score={candidate.score}:origin={candidate.origin}")
-        if not downloaded:
-            trace.append(f"site_reject:{candidate.src}:{meta}")
-            continue
-        try:
-            prepared = prepare_site_image(downloaded, assets_dir, 1600, 900)
-            site_image_path = str(prepared.output_path)
-            site_source = candidate.origin
-            trace.append(f"site:{candidate.src}")
-            trace.append(f"site_meta:{meta}")
-            trace.append(f"site_prepare:{prepared.mode}:retention={prepared.retention}:upscale={prepared.upscale}")
-            report["site_hit"] = True
-            break
-        except Exception as exc:
-            trace.append(f"site_prepare_failed:{exc.__class__.__name__}")
+    if not site_image_path:
+        for candidate in visual_candidates[:12]:
+            downloaded, meta = download_asset(candidate, assets_dir / f"{slug}-site", "site")
+            trace.append(f"site_try:{candidate.src}:score={candidate.score}:origin={candidate.origin}")
+            if not downloaded:
+                trace.append(f"site_reject:{candidate.src}:{meta}")
+                continue
+            try:
+                prepared = prepare_site_image(downloaded, assets_dir, 1600, 900)
+                site_image_path = str(prepared.output_path)
+                site_source = candidate.origin
+                trace.append(f"site:{candidate.src}")
+                trace.append(f"site_meta:{meta}")
+                trace.append(f"site_prepare:{prepared.mode}:retention={prepared.retention}:upscale={prepared.upscale}")
+                report["site_hit"] = True
+                break
+            except Exception as exc:
+                trace.append(f"site_prepare_failed:{exc.__class__.__name__}")
 
     if not site_image_path:
         ai_path, ai_note = maybe_generate_ai_visual(buyer, assets_dir, enable_ai_visual_fallback)
@@ -1258,13 +1219,13 @@ def process_buyer(
             "asset_logic_version": ASSET_LOGIC_VERSION,
             "logo_path": logo_path,
             "site_image_path": site_image_path,
-            "logo_confidence": logo_confidence(logo_score) if logo_path else "missing",
+            "logo_confidence": logo_confidence_value if logo_path else "missing",
             "logo_source": logo_source,
             "logo_url": logo_url,
             "site_source": site_source,
             "asset_fetch_notes": buyer["asset_fetch_notes"],
         }
-    report["logo_confidence"] = logo_confidence(logo_score) if logo_path else "missing"
+    report["logo_confidence"] = logo_confidence_value if logo_path else "missing"
     report["logo_source"] = logo_source
     report["logo_url"] = logo_url
     report["site_source"] = site_source
@@ -1284,13 +1245,13 @@ def main() -> int:
         "--asset-mode",
         choices=("light", "auto", "browser"),
         default="light",
-        help="light uses HTML parsing only, auto adds Playwright fallback when needed, browser uses Playwright-first fetching",
+        help="light uses controlled HTML fetching; browser and auto browser fallback are skipped for network safety",
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=8000,
-        help="per-page browser render timeout in milliseconds when Playwright-enhanced asset mode is enabled",
+        help="retained for CLI compatibility; browser navigation is skipped for network safety",
     )
     parser.add_argument(
         "--fetch-timeout-seconds",
@@ -1335,10 +1296,16 @@ def main() -> int:
                 "name": skipped.get("name", ""),
                 "website": skipped.get("website", ""),
                 "logo_hit": False,
+                "logo_confidence": "missing",
+                "logo_source": "",
+                "logo_url": "",
+                "logo_rejected_candidates": [],
                 "site_hit": False,
                 "site_source": "",
                 "asset_mode": args.asset_mode,
+                "asset_logic_version": ASSET_LOGIC_VERSION,
                 "notes": ["skipped:asset_fetch_time_budget_exceeded"],
+                "elapsed_seconds": round(time.monotonic() - started, 2),
             })
             continue
         global FETCH_DEADLINE

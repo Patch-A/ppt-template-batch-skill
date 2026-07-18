@@ -10,7 +10,22 @@
     "buyer_count": {"type": "integer", "minimum": 1, "maximum": 100},
     "records": {"type": ["object", "array"]},
     "allow_page_expand": {"type": "boolean", "default": true},
-    "need_images": {"type": "boolean", "default": true}
+    "need_images": {"type": "boolean", "default": true},
+    "contract_version": {"type": "string", "default": "1.0"},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string"},
+          "url": {"type": "string"},
+          "status": {"enum": ["verified", "pending", "unavailable"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "verification_status": {"enum": ["verified", "partial", "pending", "failed"]},
+    "warnings": {"type": "array", "items": {"type": "string"}}
   },
   "additionalProperties": true
 }
