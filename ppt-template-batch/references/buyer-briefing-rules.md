@@ -5,7 +5,7 @@ Use this reference for short "buyer briefing" PPT templates where each slide con
 ## Page model
 
 - One slide contains one category title, usually only the product category such as `烘焙机械`.
-- One slide contains 6 buyers by default.
+- One slide contains up to 6 buyers by default.
 - Each buyer entry has only two text blocks:
   - company intro, including the buyer name
   - procurement category line, formatted as `采购品类：XXXX等`
@@ -48,4 +48,11 @@ If a new template differs, pass `--layout-config` with the same fields as the de
 
 ## Console preset
 
-The local control console has a dedicated Buyer Briefing Form. Do not force users into raw JSON for this preset. The form stores `records.json` as an object with `globals` and `pages`; each page contains `title` and 6 `buyers`. The export path should call `scripts/fill_buyer_briefing_pages.py` directly, not the generic filler.
+The local control console has a dedicated Buyer Briefing Form. Do not force users into raw JSON for this preset. The form stores `records.json` as an object with `globals` and `pages`; each page contains `title` and up to 6 `buyers`. The export path should call `scripts/fill_buyer_briefing_pages.py` directly, not the generic filler.
+
+## Export contract
+
+- A page with more than 6 buyers is rejected before the PPTX is saved.
+- A page with fewer than 6 buyers is valid. Every unused summary and product slot is cleared by setting the existing runs to empty text, so stale template content cannot remain.
+- Export reports use `missing_buyers` entries with `page` and `slot`, and `overlong_text` entries with `page`, `slot`, `field`, `length`, and estimated `capacity`.
+- Text capacity warnings do not rebuild the text frame or replace its run styles. They are reported for review while the export retains the existing CLI behavior.

@@ -23,7 +23,7 @@
 **核心铁律：**
 - 文本长度 ≤ 原文（防溢出串联坍塌）
 - Group 必须递归遍历（防遗漏）
-- 表格行高设零自适应
+- 表格行高使用明确的最小高度并按内容计算；溢出必须进入验证报告
 - 市场数据必须来自公开报告（IMARC/Mordor Intelligence/Grand View Research等），不编造
 
 ---
@@ -160,7 +160,7 @@ assert len(new_text) <= original_len * 1.05, f"文本超长: {len(new_text)} vs 
 - Cell[1,0]：一级分类标签（如"包装设备领域："）
 - Cell[1,1]：5–6 个子类列表
 
-替换后设置 `row.height = Emu(0)` 自动行高。
+替换后使用脚本定义的 `MIN_TABLE_ROW_HEIGHT`（0.25 英寸）和内容估算行高；不得依赖 `Emu(0)`。
 
 ---
 
@@ -182,7 +182,7 @@ assert len(new_text) <= original_len * 1.05, f"文本超长: {len(new_text)} vs 
 
 1. **Group 递归必须**：一图全解模版中市场优势文本框常嵌套在 Group 内，`slide.shapes` 无法直接访问
 2. **文本长度是第一优先级**：宁可精简，不可溢出。溢出会导致串联覆盖后续全部区域
-3. **表格行高设 0**：python-pptx 中 `row.height = Emu(0)` 即自适应高度
+3. **表格行高明确**：每行至少 0.25 英寸，按内容计算所需高度；超过表格原始高度时报告 overflow。
 4. **保留下方不变区域**：模版中"参展费用""补贴"等区域不在一图全解替换范围，不修改
 5. **数据必须真实**：不得编造市场数据，必须来自搜索确认的公开报告
 
@@ -269,7 +269,7 @@ def run_replacement(input_path, output_path, content_map, table_data=None):
             replace_cell(table.cell(1, 0), table_data['cell_10'])
             replace_cell(table.cell(1, 1), table_data['cell_11'])
             for row in table.rows:
-                row.height = Emu(0)
+                row.height = max(MIN_TABLE_ROW_HEIGHT, content_row_height(row, table))
             print(f"✅ {shape.name} 表格已替换 + 行高自适应")
     
     walk_shapes(slide.shapes, process)
@@ -278,6 +278,14 @@ def run_replacement(input_path, output_path, content_map, table_data=None):
 ```
 
 ---
+
+## Replacement validation contract
+
+`validate_replacement(input_path, output_path, content_map, table_data=None)` loads the first slide and returns a JSON-serializable report without saving. The report validates mapped shape names, text capacity, table coordinates (`cell_00`, `cell_01`, `cell_10`, `cell_11`, or `cell_<row>_<col>`), and the output path. Missing shapes, invalid cells, and overflows are reported under stable fields and make `ok` false.
+
+`run_replacement(...)` keeps the existing Python and CLI entry point. It runs validation before any mutation or save, then preserves existing runs and recursively processes groups. Table rows use a minimum height of 0.25 inches and content-based sizing; the implementation never uses `Emu(0)`.
+
+The CLI supports `--dry-run`. It prints only the validation report as JSON and never creates or overwrites the output PPTX. A normal invocation retains the existing `Created: ...` output.
 
 ## 部署路径
 

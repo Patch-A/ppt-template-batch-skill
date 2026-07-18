@@ -1,10 +1,12 @@
 import json
 import importlib
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from argparse import Namespace
 from unittest.mock import patch
@@ -567,6 +569,111 @@ class PresetContractTests(unittest.TestCase):
             self.assertEqual(slide.shapes[mapping["slots"][5]["summary_shape"] - 1].text, "")
             self.assertEqual(slide.shapes[mapping["slots"][5]["products_shape"] - 1].text, "")
 
+    def test_buyer_briefing_accepts_fewer_than_six_and_reports_missing_buyers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            pages_path = root / "pages.json"
+            output_path = root / "output.pptx"
+            report_path = root / "report.json"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            mapping = {"title_shape": 1, "buyers_per_slide": 6, "slots": []}
+            for index in range(6):
+                summary = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.4))
+                summary.text = f"stale summary {index}"
+                products = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+                products.text = f"stale products {index}"
+                mapping["slots"].append({
+                    "summary_shape": len(slide.shapes) - 1,
+                    "products_shape": len(slide.shapes),
+                })
+            title = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+            title.text = "stale title"
+            mapping["title_shape"] = len(slide.shapes)
+            presentation.save(template_path)
+
+            pages_path.write_text(
+                json.dumps({
+                    "pages": [{
+                        "title": "Category",
+                        "buyers": [{
+                            "name": "Buyer 1",
+                            "summary": "Buyer 1 is a factual company summary.",
+                            "products": "Product 1",
+                        }],
+                    }],
+                    "mapping": mapping,
+                }),
+                encoding="utf-8",
+            )
+
+            report = self.fill_buyer_briefing_pages.fill_presentation(
+                template_path, pages_path, output_path, report_path
+            )
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(len(report["missing_buyers"]), 5)
+            self.assertEqual(report["missing_buyers"][0]["page"], 1)
+            self.assertEqual(report["missing_buyers"][0]["slot"], 2)
+            result = Presentation(output_path)
+            self.assertEqual(result.slides[0].shapes[mapping["slots"][5]["summary_shape"] - 1].text, "")
+            self.assertEqual(result.slides[0].shapes[mapping["slots"][5]["products_shape"] - 1].text, "")
+
+    def test_buyer_briefing_reports_overlong_text(self):
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        title = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+        title.text = "title"
+        summary = slide.shapes.add_textbox(0, 0, Inches(0.6), Inches(0.2))
+        summary.text = "old"
+        products = slide.shapes.add_textbox(0, 0, Inches(0.6), Inches(0.2))
+        products.text = "old"
+        mapping = {
+            "title_shape": 1,
+            "buyers_per_slide": 1,
+            "slots": [{"summary_shape": 2, "products_shape": 3}],
+        }
+
+        report = self.fill_buyer_briefing_pages.fill_slide(
+            slide,
+            {
+                "title": "Category",
+                "buyers": [{
+                    "name": "Buyer",
+                    "summary": "A" * 200,
+                    "products": "Product",
+                }],
+            },
+            mapping,
+            page_number=1,
+        )
+
+        self.assertTrue(report["overlong_text"])
+        self.assertEqual(report["overlong_text"][0]["page"], 1)
+
+    def test_buyer_briefing_rejects_more_than_six_buyers(self):
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        mapping = {"title_shape": 1, "buyers_per_slide": 6, "slots": []}
+        for index in range(6):
+            summary = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.4))
+            products = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+            mapping["slots"].append({
+                "summary_shape": len(slide.shapes) + 1,
+                "products_shape": len(slide.shapes) + 2,
+            })
+        title = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+        mapping["title_shape"] = len(slide.shapes)
+
+        with self.assertRaisesRegex(ValueError, "at most 6 buyers"):
+            self.fill_buyer_briefing_pages.fill_slide(
+                slide,
+                {"title": "Category", "buyers": [{} for _ in range(7)]},
+                mapping,
+            )
+
     def test_yitu_missing_shape_fails_without_writing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -585,6 +692,88 @@ class PresetContractTests(unittest.TestCase):
                     {"Missing Shape": "replacement"},
                 )
 
+            self.assertFalse(output_path.exists())
+
+    def test_yitu_validate_reports_missing_shape_and_text_capacity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(1), Inches(0.3))
+            shape.name = "Known Shape"
+            shape.text = "short"
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {"Known Shape": "x" * 100, "Missing Shape": "replacement"},
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["missing_shapes"], ["Missing Shape"])
+            self.assertTrue(report["overflows"])
+            self.assertTrue(report["output"]["path"].endswith("output.pptx"))
+            self.assertFalse(output_path.exists())
+
+    def test_yitu_validate_reports_invalid_table_coordinate_and_output_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_dir = root / "output-dir"
+            output_dir.mkdir()
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            table_shape = slide.shapes.add_table(1, 1, 0, 0, Inches(2), Inches(1))
+            table_shape.name = "Data Table"
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_dir,
+                {},
+                {"cell_99": "invalid", "cell_bad": "invalid"},
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertGreaterEqual(len(report["table_errors"]), 2)
+            self.assertTrue(report["output"]["errors"])
+            self.assertFalse((root / "output.pptx").exists())
+
+    def test_yitu_dry_run_prints_json_and_does_not_save(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            content_path = root / "content.json"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+            shape.name = "Known Shape"
+            shape.text = "template"
+            presentation.save(template_path)
+            content_path.write_text(json.dumps({"Missing Shape": "replacement"}), encoding="utf-8")
+
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = [
+                    "yitu_quanjie_replace.py",
+                    "--template", str(template_path),
+                    "--output", str(output_path),
+                    "--content-map", str(content_path),
+                    "--dry-run",
+                ]
+                with redirect_stdout(stdout):
+                    self.assertEqual(self.yitu_quanjie_replace.main(), 0)
+            finally:
+                sys.argv = old_argv
+
+            report = json.loads(stdout.getvalue())
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["missing_shapes"], ["Missing Shape"])
             self.assertFalse(output_path.exists())
 
     def test_feishu_zip_contains_only_portable_skill_files(self):
