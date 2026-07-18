@@ -86,11 +86,19 @@ def run_single_job(job: dict[str, Any], default_args: argparse.Namespace, index:
     if default_args.strict or job.get("strict"):
         cmd.append("--strict")
 
-    run(cmd)
+    try:
+        run(cmd)
+    except RuntimeError:
+        # The filler writes its structured report before returning a strict
+        # validation failure. Preserve that report so non-strict batches can
+        # continue and callers can see the failed records.
+        if not report_path.exists():
+            raise
     report = load_json(report_path) if report_path.exists() else {}
     return {
         "index": index,
         "ok": bool(report.get("ok", True)),
+        "schema_version": report.get("schema_version"),
         "template": str(template),
         "records": str(records),
         "layout_config": str(layout_config),
@@ -98,9 +106,16 @@ def run_single_job(job: dict[str, Any], default_args: argparse.Namespace, index:
         "report": str(report_path),
         "slide_count": report.get("slide_count"),
         "record_count": report.get("record_count"),
+        "processed_record_count": report.get("processed_record_count"),
         "missing_required_fields": report.get("missing_required_fields", []),
         "missing_assets": report.get("missing_assets", []),
+        "failed_records": report.get("failed_records", []),
+        "stale_template_text": report.get("stale_template_text", []),
+        "capacity_warnings": report.get("capacity_warnings", []),
         "warnings": report.get("warnings", []),
+        "expected_slide_count": report.get("expected_slide_count"),
+        "reopen_ok": report.get("reopen_ok"),
+        "reopen_status": report.get("reopen_status", {}),
     }
 
 
@@ -136,7 +151,10 @@ def main() -> int:
     results: list[dict[str, Any]] = []
     for index, job in enumerate(jobs, start=1):
         try:
-            results.append(run_single_job(job, args, index))
+            result = run_single_job(job, args, index)
+            results.append(result)
+            if (args.strict or job.get("strict")) and not result.get("ok", False):
+                break
         except Exception as exc:
             results.append(
                 {

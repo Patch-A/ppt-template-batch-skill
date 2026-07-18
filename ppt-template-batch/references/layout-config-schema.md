@@ -6,14 +6,19 @@ Use this reference when building a generic `layout-config.json` for `fill_ppt_fr
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "schema_version": 2,
   "record_key": "records",
   "required_fields": ["name", "summary"],
   "slides": [
     {
       "slide_index": 1,
       "texts": [
-        {"shape_index": 3, "field": "globals.deck_title"},
+        {
+          "selector": {"name": "Deck title", "role": "text"},
+          "shape_index": 3,
+          "field": "globals.deck_title"
+        },
         {"shape_index": 5, "template": "{record.name}|{record.category}"}
       ]
     }
@@ -27,7 +32,8 @@ Use `repeat` when one source slide should be reused for every record.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "schema_version": 2,
   "record_key": "records",
   "required_fields": ["name", "summary", "products"],
   "repeat": {
@@ -36,7 +42,12 @@ Use `repeat` when one source slide should be reused for every record.
     "template_slide_count": 1,
     "trim_extra_template_slides": true,
     "texts": [
-      {"shape_index": 4, "field": "name", "mode": "clear"},
+      {
+        "selector": {"name": "Buyer name", "role": "text"},
+        "shape_index": 4,
+        "field": "name",
+        "mode": "clear"
+      },
       {"shape_index": 8, "field": "summary", "mode": "clear"}
     ],
     "tables": [
@@ -58,7 +69,12 @@ Use `repeat` when one source slide should be reused for every record.
 
 ## Supported Mapping Keys
 
-- `texts`: replace a text shape by `shape_index`, `shape_id`, or `shape_name`.
+- `schema_version`: current writer version is `2`. Readers normalize version 1
+  configs in memory and keep their numeric indexes as a fallback.
+- `selector`: optional stable selector with `name` and/or semantic `role`.
+  When it matches, it is resolved before `shape_index`; `shape_index` remains a
+  compatibility fallback for older templates and configs.
+- `texts`: replace a text shape by `selector`, `shape_index`, `shape_id`, or `shape_name`.
 - `tables`: replace table cells under a table shape.
 - `images`: replace an image placeholder or insert into explicit bounds.
 - `placeholders`: replace tokens such as `{{title}}` inside existing text runs.
@@ -76,7 +92,8 @@ Use `repeat` when one source slide should be reused for every record.
 
 ## Image Rules
 
-- Prefer `shape_index` placeholders because bounds come from the template.
+- Prefer stable `selector` values for reusable configs, while retaining
+  `shape_index` on the same mapping for compatibility with older templates.
 - Use `fit: contain` for logos and `fit: cover` for right-side hero/product visuals.
 - Use `clear_if_missing: true` to remove stale placeholders when no verified asset exists.
 - Relative image paths are resolved from the `records.json` folder.
@@ -107,3 +124,19 @@ Or an object:
 ## Beginner Console Usage
 
 In the control console, non-technical users should use the example buttons first. The key idea is: `shape_index` is the element number shown in Template Structure; `field` is the data key from `records.json`; `repeat` means duplicate one template slide for many records; `images` means replace an image placeholder while keeping its bounds.
+
+## Shared Preflight Report
+
+Generic fills return a report with stable quality keys:
+
+- `ok`, `missing_required_fields`, `missing_assets`, and `warnings`.
+- `stale_template_text` for unresolved tokens or recognizable placeholder text.
+- `capacity_warnings` plus `capacity.ok` for text that may exceed its shape.
+- `expected_slide_count`, `slide_count`, and `slide_count_status`.
+- `reopen_ok` and `reopen_status`, which are set only after the temporary PPTX
+  is reopened successfully before atomic replacement.
+- `failed_records` lists records skipped in non-strict repeated fills.
+
+With `--strict`, missing required fields stop the fill before the requested
+output is written. Without `--strict`, invalid records are reported and
+isolated so valid records can still be rendered.

@@ -11,6 +11,10 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 EMU_PER_PIXEL = 12700
 
 
+def stable_selector(shape, role: str) -> dict[str, str]:
+    return {"name": shape.name, "role": role}
+
+
 def emu_to_px(value: int) -> float:
     return round(value / EMU_PER_PIXEL, 2)
 
@@ -30,6 +34,7 @@ def build_cover_config(slide) -> dict[str, Any]:
         text_candidates.append(
             {
                 "shape_index": index,
+                "name": shape.name,
                 "text": text,
                 "top": shape.top,
                 "height": shape.height,
@@ -48,7 +53,13 @@ def build_cover_config(slide) -> dict[str, Any]:
     return {
         "slide_index": 1,
         "title_shape_index": title_shape["shape_index"],
+        "title_selector": stable_selector(
+            slide.shapes[title_shape["shape_index"] - 1], "text"
+        ),
         "country_shape_index": country_shape["shape_index"],
+        "country_selector": stable_selector(
+            slide.shapes[country_shape["shape_index"] - 1], "text"
+        ),
     }
 
 
@@ -112,6 +123,7 @@ def detect_image_slots(slide, table_shape=None, slide_width: int | None = None, 
         pictures.append(
             {
                 "shape_index": index,
+                "name": shape.name,
                 "left": shape.left,
                 "top": shape.top,
                 "width": shape.width,
@@ -130,6 +142,7 @@ def detect_image_slots(slide, table_shape=None, slide_width: int | None = None, 
         if replaceable:
             logo = {
                 "mode": "replace",
+                "selector": stable_selector(slide.shapes[logo_pick["shape_index"] - 1], "image"),
                 "target_left": emu_to_px(logo_pick["left"]),
                 "target_top": emu_to_px(logo_pick["top"]),
             }
@@ -153,6 +166,7 @@ def detect_image_slots(slide, table_shape=None, slide_width: int | None = None, 
         site_pick = max(site_candidates, key=lambda item: item["area"])
         site = {
             "mode": "replace",
+            "selector": stable_selector(slide.shapes[site_pick["shape_index"] - 1], "image"),
             "target_left": emu_to_px(site_pick["left"]),
             "target_top": emu_to_px(site_pick["top"]),
             "fill": True,
@@ -237,7 +251,9 @@ def build_content_config(presentation: Presentation) -> tuple[dict[str, Any], li
         "start_slide_index": first_slide_index,
         "template_slide_count": len(content_slides),
         "title_shape_index": title_shape_index,
+        "title_selector": stable_selector(first_slide.shapes[title_shape_index - 1], "text"),
         "table_shape_index": table_shape_index,
+        "table_selector": stable_selector(first_slide.shapes[table_shape_index - 1], "table"),
         "fields": fields,
         "preserve_title": True,
         "preserve_footer": True,
@@ -245,6 +261,7 @@ def build_content_config(presentation: Presentation) -> tuple[dict[str, Any], li
     }
     if footer_shape_index is not None:
         content["footer_shape_index"] = footer_shape_index
+        content["footer_selector"] = stable_selector(first_slide.shapes[footer_shape_index - 1], "text")
     return content, image_slots
 
 
@@ -262,7 +279,8 @@ def main() -> int:
     content, image_slots = build_content_config(presentation)
 
     config = {
-        "version": 1,
+        "version": 2,
+        "schema_version": 2,
         "defaults": {
             "cover_title": args.cover_title,
             "cover_country": args.cover_country,
