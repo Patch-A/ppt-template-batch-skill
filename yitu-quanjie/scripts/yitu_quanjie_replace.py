@@ -33,6 +33,11 @@ def set_first_run(paragraph: Any, text: str) -> None:
         paragraph.add_run().text = text
 
 
+def split_text_lines(value: str) -> list[str]:
+    """Normalize line endings while preserving trailing empty paragraphs."""
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def replace_text(shape: Any, new_text: str) -> None:
     if not getattr(shape, "has_text_frame", False):
         raise TypeError(f"Shape {getattr(shape, 'name', '<unknown>')} has no text frame")
@@ -45,7 +50,7 @@ def replace_text_keep_lines(shape: Any, new_text: str) -> None:
         raise TypeError(f"Shape {getattr(shape, 'name', '<unknown>')} has no text frame")
     text_frame = shape.text_frame
     clear_runs(text_frame)
-    lines = new_text.split("\n")
+    lines = split_text_lines(new_text)
     paragraphs = list(text_frame.paragraphs)
     while len(paragraphs) < len(lines):
         paragraphs.append(text_frame.add_paragraph())
@@ -131,7 +136,7 @@ def _text_metrics(
     )
     required_lines = sum(
         max(1, math.ceil(_weighted_text_length(line) / line_width_units))
-        for line in (str(value or "").splitlines() or [""])
+        for line in split_text_lines(value)
     )
     return {
         "font_size": font_size,
@@ -173,7 +178,7 @@ def _content_row_height(cell: Any, column_width: int, value: str) -> int:
     )
     lines = sum(
         max(1, math.ceil(_weighted_text_length(line) / line_width_units))
-        for line in (str(value or "").splitlines() or [""])
+        for line in split_text_lines(value)
     )
     height_pt = lines * font_size * 1.2 + vertical_margin / 12700
     return max(MIN_TABLE_ROW_HEIGHT, int(Inches(height_pt / 72.0)))

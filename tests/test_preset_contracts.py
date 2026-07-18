@@ -971,6 +971,33 @@ class PresetContractTests(unittest.TestCase):
                 )
             )
 
+    def test_yitu_capacity_preserves_trailing_empty_lines_for_lf_and_crlf(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(3), Inches(0.3))
+            shape.name = "Trailing Lines Shape"
+            shape.text = "template"
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
+            presentation.save(template_path)
+
+            for replacement in ("A\n", "\n", "A\r\n"):
+                with self.subTest(replacement=repr(replacement)):
+                    report = self.yitu_quanjie_replace.validate_replacement(
+                        template_path,
+                        root / "output.pptx",
+                        {"Trailing Lines Shape": replacement},
+                    )
+
+                    overflows = [
+                        item for item in report["overflows"]
+                        if item["target"] == "Trailing Lines Shape"
+                    ]
+                    self.assertTrue(overflows)
+                    self.assertEqual(overflows[0]["required_lines"], 2.0)
+
     def test_yitu_validate_reports_invalid_table_coordinate_and_output_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
