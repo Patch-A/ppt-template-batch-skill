@@ -43,6 +43,8 @@ Keep the existing native PPTX template pipeline as the export engine. Use the co
 
 For Feishu/Aily or another agent with native search, image, and slide capabilities, use the repository-level `feishu-agent-skill/` entrypoint. It is intentionally provider-neutral and does not ask the user for a model API Key or local Python dependencies. Build the Aily-compatible ZIP with `scripts/build_feishu_agent_skill.py`; the package contains a root-level SKILL.md and references/ only. Keep the desktop Python/PPTX engine separate for local runs.
 
+Keep the execution boundary explicit: the desktop path owns the repository's Python/PPTX scripts, local console, deterministic asset fetcher, and optional COM/image fallback. The Feishu/Aily path owns native web search, image search, slide editing, and export; it must not install or invoke Python, `python-pptx`, Playwright, the desktop asset fetcher, or a remote-model CLI. Both paths should return source status and warnings for anything that was not verified.
+
 ## Workflow
 
 ### 1. Identify the template family
@@ -51,7 +53,7 @@ Classify the incoming PPT before filling content:
 
 - Generic batch deck: arbitrary repeated pages, tables, cards, product blocks, report pages, catalogs, or profile pages.
 - Buyer-board preset: one buyer per page, table fields, optional logo and right-side visual.
-- Buyer-briefing preset: one category per page, 6 buyers per page, compact intro and `采购品类：...` lines.
+- Buyer-briefing preset: one category per page, six buyer slots per page, compact intro and `采购品类：...` lines.
 
 For generic templates, read `references/generic-ppt-batch-workflow.md` first.
 For buyer-board templates, also read `references/buyer-board-rules.md`.
@@ -124,11 +126,13 @@ Rules:
 Use these scripts when the template matches their data model:
 
 - `scripts/fill_buyer_board_text.py` for buyer-board table pages
-- `scripts/fill_buyer_briefing_pages.py` for 6-buyers-per-page briefing pages
+- `scripts/fill_buyer_briefing_pages.py` for six-slot-per-page briefing pages
 
 For unrelated template families, write a small dedicated filler using the same principles: inspect placeholders, preserve styles, fill data, then verify.
 
 Use `scripts/fill_ppt_from_records.py` for generic text, table, placeholder, image, and repeated-slide mappings. Read `references/layout-config-schema.md` before authoring a new generic `layout-config.json`.
+
+Generic configs use `schema_version: 2`. Prefer `selector: {"name": "...", "role": "..."}` for stable shape matching; selectors resolve before `shape_id`/`shape_name` and the numeric `shape_index` compatibility fallback. Version 1 configs are normalized in memory. The shared generic report includes `ok`, `missing_required_fields`, `missing_assets`, `warnings`, `stale_template_text`, `capacity_warnings`, slide-count status, reopen status, and failed-record details. Outputs are written atomically only after the temporary PPTX can be reopened.
 
 ### 6. Insert images only after text is stable
 
@@ -136,6 +140,7 @@ Treat images as a separate pass:
 
 - replace only approved placeholder slots
 - Asset fetching should stay bounded: use light HTML fetching by default, extract official inline SVG marks when available, keep browser fallback explicitly opt-in for slow sites, and enforce a per-buyer timeout. Use `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
+- Asset URLs must be `http` or `https`. Before each request, reject localhost and non-public IP literals or DNS results, including loopback, private, link-local, reserved, multicast, and unspecified addresses; validate the final URL of every redirect and keep redirects on the validated site by default. DNS resolution is bounded, curl pins the validated public address, redirects are capped at 5 hops, and Python, curl, and inline data reads are capped at 8 MiB.
 - Never accept a logo solely because its filename contains `logo`: reject certification seals, government badges, sale-notice marks, banners, and low-confidence brand mismatches. Prefer a verified official brand mark, and leave the Logo slot empty when confidence is insufficient.
 - Match the exact enterprise, not only the website domain: reject subsidiary and business-unit logos when the requested profile is for the parent company.
 - do not overwrite fixed design imagery
@@ -188,10 +193,14 @@ For generic templates, use `scripts/import_content_document.py` or the control c
 Buyer-briefing preset expects pages with:
 
 - `title`
-- 6 buyers per page
+- no more than 6 buyers per page; split larger inputs before filling
 - buyer `name`
 - buyer `summary`
 - buyer `products`
+
+The filler clears unused slots on pages with fewer than 6 buyers and preserves their original run styles. Its optional report records `missing_buyers`, `overlong_text`, and `warnings`; it rejects a page that exceeds the six-slot capacity.
+
+For the separate `yitu-quanjie` preset, run `yitu-quanjie/scripts/yitu_quanjie_replace.py --dry-run` to validate mapped shape names, table coordinates, text capacity, table height, and the output path. The command prints JSON only and never creates or overwrites the output. A normal run repeats validation before saving; its report uses `missing_shapes`, `shape_errors`, `table_errors`, and `overflows`.
 
 ### 8. Diagnose runtime issues
 
@@ -220,6 +229,8 @@ After export, verify:
 - no stale placeholder content from the template
 - image placeholders cleared or replaced correctly
 
+For generic exports, treat `stale_template_text`, `capacity_warnings`, `missing_assets`, `slide_count_status`, and `reopen_status` as the preflight review record. For buyer briefing, also review the six-slot and overlong-text warnings; for Yitu dry-runs, resolve every missing shape, table error, and overflow before allowing a normal save.
+
 For batch jobs, write a JSON report listing each output file, slide count, missing required records, and corruption checks.
 
 ## Files To Read
@@ -231,7 +242,7 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
 - `references/buyer-board-rules.md`
   Use only for buyer-board profile pages with one buyer per slide.
 - `references/buyer-briefing-rules.md`
-  Use only for compact buyer-briefing pages with one category and 6 buyers per slide.
+  Use only for compact buyer-briefing pages with one category and six buyer slots per slide.
 - `references/buyer-board-workflow-changelog.md`
   Use as a regression checklist when a buyer-board export shows stale template text, incorrect row heights, incomplete repeated pages, or unreliable Logo assets.
 - `scripts/generate_layout_config.py`

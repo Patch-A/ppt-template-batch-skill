@@ -43,7 +43,13 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 
 - generic：任何产品目录、公司介绍、报告、报价单、培训材料和重复卡片模板。
 - buyer_board：一页一个买家，通常包含企业名称、国家、官网、简介、采购产品、Logo 和右侧图片。
-- buyer_briefing：一页一个品类，通常每页 6 个买家；简介接近模板示例长度，采购品类必须使用模板要求的固定前缀。
+- buyer_briefing：一页一个品类，每页最多 6 个买家；超过 6 个时先把输入分成多个页面，简介接近模板示例长度，采购品类必须使用模板要求的固定前缀，未使用的槽位必须清空。
+
+## 通用映射与报告边界
+
+桌面端 generic 模式使用 `layout-config.json` 的 `schema_version: 2`。优先用 `selector: {"name": "...", "role": "..."}` 定位形状，`shape_index` 只作为兼容回退；旧版 schema 1 由桌面读取器在内存中规范化。Feishu/Aily 不调用桌面 filler，而是把等价的字段名、页面位置和固定元素约束交给原生幻灯片能力执行。
+
+无论模式如何，填充报告都应说明必填字段、缺失素材、残留模板文字、文本溢出、页数和导出可打开性；桌面 generic 报告使用 `ok`、`missing_required_fields`、`missing_assets`、`warnings`、`stale_template_text`、`capacity_warnings`、`slide_count_status`、`reopen_status` 和 `failed_records` 这些稳定字段。Feishu/Aily 额外保留本文件规定的 `contract_version`、`sources`、`verification_status` 和 `warnings`，不得用平台成功响应掩盖未核验内容。
 
 ## 原生模型使用规则
 
@@ -75,3 +81,7 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 飞书/Aily 版本使用平台原生搜索、图片、幻灯片和导出能力，并在填充报告中传递这些字段；不把 Python 引擎、`engine/` 目录或模型 API Key 作为 skill 包依赖。
 
 详细输入字段、图片筛选和失败处理规则见 references/agent-runtime.md。飞书/Aily 版本优先使用平台原生幻灯片创建、编辑和导出能力；不要寻找 engine/ 目录、requirements.txt 或远程模型 CLI。桌面端需要可重复脚本时，再使用仓库根目录中的确定性 PPT 引擎。
+
+当任务涉及公开 URL 时，只使用 `http`/`https`，不访问 localhost、回环、私有、链路本地或其他非公网地址，也不绕过平台对 DNS 和重定向的安全限制。桌面资产抓取器会对 DNS 结果逐一校验并固定公网地址，限制重定向为 5 跳、单次响应为 8 MiB；Feishu/Aily 不调用该下载器，无法确认的素材标记为 `pending` 或 `unavailable`。
+
+`yitu-quanjie/scripts/yitu_quanjie_replace.py --dry-run` 是桌面端确定性预检入口，只负责本地模板的 shape、表格坐标、容量、行高和输出路径校验，打印 JSON 且不创建输出文件；Feishu/Aily 任务应使用平台原生的页面校验和报告，不要把该 Python CLI 当作 portable skill 的依赖。

@@ -59,6 +59,12 @@ Use this skill when you want to turn any PPT/PPTX template into a repeatable bat
 7. Export one or many PPT files.
 8. Verify slide count, required fields, missing records, encoding, and obvious layout regressions.
 
+## Generic mapping and preflight contract
+
+Generic layout configs are written as `schema_version: 2`. A mapping should prefer a stable selector such as `selector: {"name": "Deck title", "role": "text"}`; the reader resolves the selector before `shape_id`/`shape_name` and the numeric `shape_index` fallback. Version 1 configs are normalized in memory, so existing configs remain readable. Keep `shape_index` beside a selector when a config must remain compatible with older templates.
+
+Every generic fill returns a report with stable quality fields: `ok`, `missing_required_fields`, `missing_assets`, `warnings`, `stale_template_text`, `capacity_warnings`, `expected_slide_count`, `slide_count`, `slide_count_status`, `reopen_ok`, `reopen_status`, and `failed_records`. The filler writes to a temporary sibling PPTX, reopens it, and replaces the requested output only after the reopen succeeds. `--strict` stops before writing when required fields are missing; non-strict repeated batches isolate failed records and retain their details.
+
 ## Local control console
 
 A browser-based local console is included for generic PPT project management, template upload, text or document import, natural-language layout mapping, JSON editing, slide-structure inspection, repeated-page selection, export controls, reports, and finished-file downloads. Buyer form entry and procurement research are optional preset capabilities.
@@ -73,7 +79,7 @@ When creating a project, choose one of the built-in presets:
 
 - Generic PPT: arbitrary template decomposition and config-driven filling.
 - Buyer Board Preset: country plus procurement need, buyer profiles, logos, website/product visuals, and one-buyer-per-page layouts.
-- Buyer Briefing Preset: compact category pages with a dedicated form: one category per slide and 6 buyers per slide.
+- Buyer Briefing Preset: compact category pages with a dedicated form: one category per slide and six buyer slots per slide.
 
 Recent usability upgrades:
 
@@ -106,6 +112,8 @@ python scripts/build_feishu_agent_skill.py --output output/ppt-template-batch-ag
 
 Import the generated ZIP through Aily's local skill upload flow. Do not unpack it into a parent folder or require manifest.json/engine/. Read `feishu-agent-skill/SKILL.md` and `feishu-agent-skill/references/agent-runtime.md` for the input contract and execution order. The desktop Python/PPTX engine remains available from the repository root for local runs.
 
+Execution boundary: desktop runs use the repository's Python/PPTX scripts, local console, deterministic asset fetcher, and optional PowerPoint COM or Python image fallback. Feishu/Aily runs use only the platform's native search, image, slide, and export capabilities; they do not install Python, `python-pptx`, Playwright, or an OpenAI-compatible CLI, and they do not call the desktop scripts. Both paths must preserve source status and warnings rather than turning unverified content into facts.
+
 Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-agent-skill/references/buyer-board-workflow-changelog.md`](feishu-agent-skill/references/buyer-board-workflow-changelog.md). The checklist covers stale multi-run text, dynamic content-row sizing, complete repeated-slide cloning, exact-enterprise Logo verification, and no-fabrication fallbacks.
 
 The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md`](feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md). It adds fixed-style protection for content titles and footer prompts, safe original-run replacement, explicit style-override opt-in, and model-selection guidance.
@@ -115,6 +123,18 @@ The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-s
 Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.
 
 For deterministic local replacement, use `yitu-quanjie/scripts/yitu_quanjie_replace.py` with JSON mappings for shape names and optional table cells. It is separate from the buyer-board preset and does not change the generic PPT workflow.
+
+Run the deterministic Yitu validation without creating or overwriting an output file:
+
+```powershell
+python yitu-quanjie/scripts/yitu_quanjie_replace.py `
+  --template "path/to/template.pptx" `
+  --output "output/yitu.pptx" `
+  --content-map "content-map.json" `
+  --dry-run
+```
+
+The JSON report identifies `missing_shapes`, `shape_errors`, `table_errors`, `overflows`, and output-path errors. A normal run performs the same validation before saving, uses a minimum 0.25-inch table row height, and reports overflow instead of relying on zero-height auto-fit behavior.
 
 ## Supported modes
 
@@ -226,7 +246,7 @@ python scripts/run_buyer_board_pipeline.py ^
 
 ### Buyer-briefing preset
 
-Use this for compact `买家商情` templates where each slide contains one category and 6 buyer entries.
+Use this for compact `买家商情` templates where each slide contains one category and six buyer slots.
 
 ```bash
 python ppt-template-batch/scripts/fill_buyer_briefing_pages.py ^
@@ -235,7 +255,7 @@ python ppt-template-batch/scripts/fill_buyer_briefing_pages.py ^
   "output/buyer-briefing.pptx"
 ```
 
-`briefing-pages.json` should contain pages with `title` and 6 buyers. Each buyer should include `name`, `summary`, and `products`. The script preserves run-level text styles so the output stays close to the original template.
+`briefing-pages.json` should contain pages with `title` and no more than 6 buyers. Each buyer should include `name`, `summary`, and `products`. A page with more than 6 buyers is rejected; split the input into pages before running. When a page has fewer than 6 buyers, unused mapped slots are cleared while their original run styles are preserved. Use `--report` to write `missing_buyers`, `overlong_text`, and `warnings` alongside the PPTX.
 
 ## Dependencies
 
@@ -293,6 +313,8 @@ $env:BUYER_BOARD_DISABLE_CURL_FALLBACK="1"
 ```
 
 Asset mode is intentionally staged: `auto` uses lightweight HTML parsing first, extracts real inline header SVG logos, and only enables the Playwright path when `$env:BUYER_BOARD_ENABLE_BROWSER_FALLBACK="1"` is explicitly set. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
+
+Asset URL safety is enforced before every download and after every redirect: only `http` and `https` are accepted; `localhost`, loopback, private, link-local, reserved, multicast, unspecified, and other non-public DNS results are rejected; resolved public addresses are pinned for the curl request; and redirects stay on the validated site by default. DNS resolution has its own deadline, redirect chains are capped at 5 hops, and Python, curl, and inline data paths cap retained response data at 8 MiB. Oversized responses are rejected before they become retained assets.
 
 ## Buyer asset recovery
 
