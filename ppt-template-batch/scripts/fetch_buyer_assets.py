@@ -88,7 +88,12 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_RESPONSE_BYTES = MAX_IMAGE_BYTES
 STABLE_DOWNLOAD_FAILURE_REASONS = frozenset(
     {
+        "invalid_scheme",
+        "invalid_host",
+        "invalid_ip_literal",
+        "host_resolution_failed",
         "response_too_large",
+        "too_many_redirects",
         "different_host",
         "local_host",
         "non_public_ip",

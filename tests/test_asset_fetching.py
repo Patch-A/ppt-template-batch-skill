@@ -49,7 +49,17 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            for reason in ("response_too_large", "different_host"):
+            for reason in (
+                "invalid_scheme",
+                "invalid_host",
+                "local_host",
+                "invalid_ip_literal",
+                "non_public_ip",
+                "different_host",
+                "host_resolution_failed",
+                "response_too_large",
+                "too_many_redirects",
+            ):
                 with self.subTest(reason=reason), patch.object(
                     self.fetch_buyer_assets,
                     "fetch_url",
