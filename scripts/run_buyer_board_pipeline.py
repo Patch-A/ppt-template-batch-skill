@@ -12,6 +12,10 @@ from typing import Any
 from pptx import Presentation
 
 
+NETWORK_UNSAFE_ASSET_MODES = frozenset({"auto", "browser"})
+NETWORK_UNSAFE_SKIP_NOTE = "browser_skip:network_unsafe"
+
+
 def resolve_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -54,6 +58,36 @@ def write_failure_report(workspace: Path, stage: str, exc: Exception) -> None:
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def save_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8-sig")
+
+
+def resolve_safe_asset_mode(requested_mode: str) -> str:
+    if requested_mode in NETWORK_UNSAFE_ASSET_MODES:
+        return "light"
+    return requested_mode
+
+
+def record_network_unsafe_skip(report_file: Path, requested_mode: str) -> None:
+    if requested_mode not in NETWORK_UNSAFE_ASSET_MODES:
+        return
+    report = load_json(report_file)
+    if not isinstance(report, list):
+        raise ValueError("Asset fetch report must contain a list of buyer reports.")
+    for item in report:
+        if not isinstance(item, dict):
+            continue
+        notes = item.get("notes")
+        if not isinstance(notes, list):
+            notes = []
+            item["notes"] = notes
+        if NETWORK_UNSAFE_SKIP_NOTE not in notes:
+            notes.append(NETWORK_UNSAFE_SKIP_NOTE)
+        item["asset_mode"] = requested_mode
+    save_json(report_file, report)
 
 
 def default_cover_title(args: argparse.Namespace) -> str:
@@ -169,11 +203,12 @@ def enrich_buyer_assets(
     if enable_ai_visual_fallback:
         cmd.append("--enable-ai-visual-fallback")
     if asset_mode:
-        cmd.extend(["--asset-mode", asset_mode])
+        cmd.extend(["--asset-mode", resolve_safe_asset_mode(asset_mode)])
     if browser_timeout_ms:
         cmd.extend(["--browser-timeout-ms", str(browser_timeout_ms)])
     try:
         run(cmd)
+        record_network_unsafe_skip(report_file, asset_mode)
         return output_json
     except RuntimeError:
         return buyers_path
@@ -288,13 +323,17 @@ def parse_args() -> argparse.Namespace:
         "--asset-mode",
         choices=("light", "auto", "browser"),
         default="light",
-        help="Asset fetch mode: light for HTML-only, auto for HTML plus Playwright fallback, browser for Playwright-first fetching",
+        help=(
+            "Asset fetch mode. light uses bounded HTML fetching; auto and browser are "
+            "compatibility modes that skip unsafe browser-network access and record "
+            "browser_skip:network_unsafe."
+        ),
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=18000,
-        help="Per-page Playwright timeout in milliseconds for browser-enhanced asset fetch modes",
+        help="Compatibility timeout retained for the browser option; unsafe browser-network access is skipped",
     )
     parser.add_argument(
         "--enable-ai-visual-fallback",

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 
+NETWORK_UNSAFE_ASSET_MODES = frozenset({"auto", "browser"})
+NETWORK_UNSAFE_SKIP_NOTE = "browser_skip:network_unsafe"
+
+
 def resolve_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -43,6 +47,31 @@ def load_json(path: Path) -> Any:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8-sig")
+
+
+def resolve_safe_asset_mode(requested_mode: str) -> str:
+    if requested_mode in NETWORK_UNSAFE_ASSET_MODES:
+        return "light"
+    return requested_mode
+
+
+def record_network_unsafe_skip(report_file: Path, requested_mode: str) -> None:
+    if requested_mode not in NETWORK_UNSAFE_ASSET_MODES:
+        return
+    report = load_json(report_file)
+    if not isinstance(report, list):
+        raise ValueError("Asset fetch report must contain a list of buyer reports.")
+    for item in report:
+        if not isinstance(item, dict):
+            continue
+        notes = item.get("notes")
+        if not isinstance(notes, list):
+            notes = []
+            item["notes"] = notes
+        if NETWORK_UNSAFE_SKIP_NOTE not in notes:
+            notes.append(NETWORK_UNSAFE_SKIP_NOTE)
+        item["asset_mode"] = requested_mode
+    save_json(report_file, report)
 
 
 def first_existing(paths: list[Path]) -> Path | None:
@@ -137,7 +166,7 @@ def copy_assets_to_workspace(buyers_path: Path, workspace_dir: Path, output_name
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recover real buyer logo and website visuals locally after a WorkBuddy-sandboxed run."
+        description="Run a bounded buyer-board asset fetch after a WorkBuddy-sandboxed run."
     )
     parser.add_argument("--workspace", required=True, help="Workspace directory produced by the pipeline or WorkBuddy run")
     parser.add_argument("--buyers-json", help="Optional buyers JSON override")
@@ -149,13 +178,17 @@ def parse_args() -> argparse.Namespace:
         "--asset-mode",
         choices=("light", "auto", "browser"),
         default="auto",
-        help="Asset fetch mode for the recovery pass. Use browser for the most aggressive real-site recovery.",
+        help=(
+            "Asset fetch mode. light uses bounded HTML fetching; auto and browser are "
+            "compatibility modes that skip unsafe browser-network access and record "
+            "browser_skip:network_unsafe."
+        ),
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=18000,
-        help="Per-page timeout for Playwright-enhanced asset recovery",
+        help="Compatibility timeout retained for the browser option; unsafe browser-network access is skipped",
     )
     parser.add_argument(
         "--enable-ai-visual-fallback",
@@ -165,7 +198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-ppt-refresh",
         action="store_true",
-        help="Only regenerate buyers JSON with recovered real assets, without applying them back into a PPT",
+        help="Only regenerate the buyers JSON from the asset-fetch result, without applying it back into a PPT",
     )
     return parser.parse_args()
 
@@ -197,13 +230,14 @@ def main() -> int:
         "--report-file",
         str(report_file),
         "--asset-mode",
-        args.asset_mode,
+        resolve_safe_asset_mode(args.asset_mode),
         "--browser-timeout-ms",
         str(args.browser_timeout_ms),
     ]
     if args.enable_ai_visual_fallback:
         fetch_cmd.append("--enable-ai-visual-fallback")
     run(fetch_cmd)
+    record_network_unsafe_skip(report_file, args.asset_mode)
 
     copied_buyers = copy_assets_to_workspace(
         recovered_buyers,
