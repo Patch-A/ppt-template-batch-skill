@@ -6,6 +6,16 @@
 
 飞书/Aily 直接使用原生幻灯片能力完成 PPT 创建、复制页面、放置图片和导出。该运行路径不安装 Python、python-pptx、Playwright、OpenAI SDK，也不需要任何模型 API Key。仓库中的 Python/PPTX 脚本只服务于桌面版，不是 Aily skill 的启动依赖。
 
+## 稳定合同字段
+
+输入和输出可带 `contract_version`，当前固定为字符串 `"1.0"`；旧输入缺少该字段时按 `"1.0"` 兼容处理。每次飞书/Aily 任务的输出报告都应保留：
+
+- `sources`：来源记录数组，记录企业资料、图片或生图提示词的来源、状态和可回查标识。
+- `verification_status`：`verified`、`partial`、`pending` 或 `failed`，表示本次资料核验的整体状态。
+- `warnings`：字符串数组，记录缺失、溢出、待核验或可重试事项；不得用警告字段掩盖已写入正文的虚构事实。
+
+这些字段是报告合同，不改变飞书/Aily 的原生搜索、图片、幻灯片和导出执行路径。可移植 skill ZIP 只允许根目录 `SKILL.md` 与 `references/` 下的文档和 JSON，不携带 `engine/`、Python 运行时或额外路径。
+
 ## 任务识别
 
 从用户请求提取 template、mode、country、procurement_need、buyer_count、records 和 allow_page_expand。如果没有 mode，根据模板和用户描述判断：一页一个企业用 buyer_board，一页 6 个企业用 buyer_briefing，其他情况用 generic。

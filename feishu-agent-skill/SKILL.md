@@ -31,12 +31,13 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
       "buyer_count": 10,
       "records": "可选，买家或业务数据",
       "allow_page_expand": true,
-      "need_images": true
+      "need_images": true,
+      "contract_version": "1.0"
     }
 
 当用户只提供“国家 + 采购需求”时，默认使用 buyer_board，先搜索并核验买家，再填入模板。用户提供已有买家资料时，不重复编造资料，先做字段整理和真实性风险标记。
 
-在飞书/Aily 中执行 buyer_board 时，先用智能体原生搜索生成并核验 buyers 数据，再把已整理的 buyers.json 交给 engine/scripts/run_buyer_board_pipeline.py 的已有数据模式。不要调用需要远程模型 Key 的自动检索 CLI。
+在飞书/Aily 中执行 buyer_board 时，先用智能体原生搜索生成并核验 buyers 数据，再用平台原生幻灯片能力处理已整理的 buyers 数据。不要调用需要远程模型 Key 的自动检索 CLI。
 
 ## 三种模式
 
@@ -62,5 +63,15 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 - layout-config.json 或等价字段映射：记录模板结构与填充规则。
 - fill-report.json：记录页数、字段缺失、溢出、乱码和图片越界检查结果。
 - sources.json：记录企业资料、Logo、产品图和生图提示词的来源或状态。
+
+## Feishu/Aily 合同字段
+
+`contract_version` 是输入和输出都可携带的稳定合同版本，当前为字符串 `"1.0"`，缺省时按 `"1.0"` 处理，不影响旧输入。输出报告至少保留以下字段：
+
+- `sources`：来源记录数组；每条记录说明来源类型、链接或素材标识，以及 `verified`、`pending` 或 `unavailable` 状态。
+- `verification_status`：整体核验状态，只使用 `verified`、`partial`、`pending` 或 `failed`。
+- `warnings`：面向用户的可重试或待确认事项数组，不把未核验内容写成事实。
+
+飞书/Aily 版本使用平台原生搜索、图片、幻灯片和导出能力，并在填充报告中传递这些字段；不把 Python 引擎、`engine/` 目录或模型 API Key 作为 skill 包依赖。
 
 详细输入字段、图片筛选和失败处理规则见 references/agent-runtime.md。飞书/Aily 版本优先使用平台原生幻灯片创建、编辑和导出能力；不要寻找 engine/ 目录、requirements.txt 或远程模型 CLI。桌面端需要可重复脚本时，再使用仓库根目录中的确定性 PPT 引擎。

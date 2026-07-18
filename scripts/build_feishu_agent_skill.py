@@ -9,34 +9,43 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "feishu-agent-skill"
+REQUIRED_FILES = (
+    Path("SKILL.md"),
+    Path("references/agent-runtime.md"),
+    Path("references/input-schema.json"),
+)
 
 
-def ignored(relative: Path) -> bool:
-    parts = set(relative.parts)
-    if "__pycache__" in parts or ".git" in parts:
-        return True
-    if parts.intersection({"output", "outputs", "console-projects", "examples", "saudi-three-buyer-boards"}):
-        return True
-    if relative.as_posix().startswith("assets/examples/"):
-        return True
-    if relative.as_posix() == "references/sa-example-data.md":
-        return True
-    return False
+def validate_package(source: Path) -> list[Path]:
+    missing = [relative.as_posix() for relative in REQUIRED_FILES if not (source / relative).is_file()]
+    if missing:
+        raise ValueError(f"Missing required package files: {', '.join(missing)}")
+
+    entries = sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix())
+    unsupported: list[str] = []
+    files: list[Path] = []
+    for item in entries:
+        relative = item.relative_to(source)
+        is_reference_path = relative.parts and relative.parts[0] == "references"
+        is_allowed = relative == Path("SKILL.md") or is_reference_path
+        if not is_allowed:
+            unsupported.append(relative.as_posix())
+        elif item.is_file():
+            files.append(item)
+
+    if unsupported:
+        raise ValueError(f"Unsupported package paths: {', '.join(unsupported)}")
+    return files
 
 
 def copy_filtered(source: Path, destination: Path) -> int:
     count = 0
-    for item in source.rglob("*"):
+    for item in validate_package(source):
         relative = item.relative_to(source)
-        if ignored(relative):
-            continue
         target = destination / relative
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif item.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
-            count += 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        count += 1
     return count
 
 
@@ -52,7 +61,7 @@ def build(output: Path) -> Path:
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for item in staging.rglob("*"):
                 if item.is_file():
-                    archive.write(item, item.relative_to(staging))
+                    archive.write(item, item.relative_to(staging).as_posix())
         print(f"Packaged {package_files} Aily-compatible files: {output}")
     return output
 

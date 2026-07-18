@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import mimetypes
 import os
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import uuid
 import webbrowser
 import zipfile
@@ -19,12 +21,20 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from discover_buyer_profiles import buyer_evidence_context, normalize_products, pad_or_trim_bio, refine_buyer_products
 
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
+DIAGNOSTIC_SUBPROCESS_TIMEOUT_SECONDS = 20
+EXPORT_SUBPROCESS_TIMEOUT_SECONDS = 300
+REDACTED = "[redacted]"
+SENSITIVE_KEY_NAMES = {
+    "access_token", "api_key", "apikey", "authorization", "client_secret", "password",
+    "secret", "token", "unified_key", "research_key", "visual_key", "layout_key",
+}
 PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 BUYER_FIELDS = (
     "name", "country", "website", "products", "bio", "logo_path", "site_image_path", "research_notes",
@@ -74,6 +84,25 @@ def clean_base_url(value: Any, provider: str) -> str:
     if base_url:
         return base_url
     return MODEL_PROVIDER_DEFAULTS.get(provider, MODEL_PROVIDER_DEFAULTS["compatible"])["base_url"]
+
+
+def is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_bind_host(host: str, allow_non_loopback: bool = False) -> str:
+    normalized = str(host or "").strip()
+    if not normalized:
+        raise ValueError("Console host must be explicit; default to the loopback address.")
+    if not allow_non_loopback and not is_loopback_host(normalized):
+        raise ValueError("Non-loopback console binding requires --allow-non-loopback.")
+    return normalized
 
 
 def model_list_endpoint(base_url: str) -> str:
@@ -142,12 +171,76 @@ def read_json(path: Path) -> Any:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _sensitive_key(value: Any) -> bool:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return normalized in SENSITIVE_KEY_NAMES or normalized.endswith(("_api_key", "_token", "_secret"))
+
+
+def _redact_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        if not parsed.scheme or not parsed.netloc:
+            return value
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        try:
+            port = f":{parsed.port}" if parsed.port is not None else ""
+        except ValueError:
+            port = ""
+        userinfo = f"{quote(parsed.username, safe='')}:{REDACTED}@" if parsed.username or parsed.password else ""
+        query = []
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True):
+            query.append((key, REDACTED if _sensitive_key(key) else item))
+        return urlunsplit((parsed.scheme, f"{userinfo}{hostname}{port}", parsed.path, urlencode(query), parsed.fragment))
+    except ValueError:
+        return value
+
+
+def redact_credentials(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if _sensitive_key(key) else redact_credentials(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_credentials(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_credentials(item) for item in value)
+    if isinstance(value, str):
+        return _redact_url(value)
+    return value
+
+
+def _redact_output(value: str, env: dict[str, str]) -> str:
+    for key, secret in env.items():
+        if _sensitive_key(key) and secret:
+            value = value.replace(secret, REDACTED)
+    return value
 
 
 def decode_output(value: bytes | None) -> str:
     if not value:
         return ""
+    if isinstance(value, str):
+        return value
     for encoding in ("utf-8", "gbk", sys.getdefaultencoding()):
         try:
             return value.decode(encoding)
@@ -160,13 +253,30 @@ def run_command(
     command: list[str],
     cwd: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     if extra_env:
         env.update(extra_env)
-    result = subprocess.run(command, cwd=cwd or repo_root(), capture_output=True, text=False, env=env)
-    return result.returncode, decode_output(result.stdout), decode_output(result.stderr)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd or repo_root(),
+            capture_output=True,
+            text=False,
+            env=env,
+            timeout=max(0.1, float(timeout)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = decode_output(exc.stderr)
+        suffix = f"subprocess timed out after {timeout:g}s"
+        return 124, _redact_output(decode_output(exc.stdout), env), _redact_output(
+            f"{suffix}: {stderr}" if stderr else suffix, env
+        )
+    return result.returncode, _redact_output(decode_output(result.stdout), env), _redact_output(
+        decode_output(result.stderr), env
+    )
 
 
 def slugify(value: str) -> str:
@@ -586,7 +696,7 @@ class ConsoleState:
                 f"{role}_configured": configured,
                 f"{role}_model": cfg["model"],
             })
-        return payload
+        return redact_credentials(payload)
 
     def configure_models(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.model_settings["unified"] = bool(payload.get("unified", True))
@@ -643,12 +753,16 @@ class ConsoleState:
             "except Exception as e:\n"
             "    print(json.dumps({'ok': False, 'reachable': False, 'status': 0, 'error': str(e)}, ensure_ascii=False))\n"
         )
-        returncode, stdout, stderr = run_command([sys.executable, "-c", child_code], extra_env=self.model_env(role))
+        returncode, stdout, stderr = run_command(
+            [sys.executable, "-c", child_code],
+            extra_env=self.model_env(role),
+            timeout=DIAGNOSTIC_SUBPROCESS_TIMEOUT_SECONDS,
+        )
         try:
             child_probe = json.loads(stdout.strip() or "{}")
         except json.JSONDecodeError:
             child_probe = {"ok": False, "reachable": False, "status": 0, "error": (stderr or stdout).strip()}
-        return {
+        return redact_credentials({
             "ok": bool(parent_probe.get("reachable") or child_probe.get("reachable")),
             "provider": config["provider"],
             "base_url": base_url,
@@ -663,7 +777,7 @@ class ConsoleState:
                 "NO_PROXY": os.environ.get("NO_PROXY", ""),
             },
             "hint": "HTTP 401/403 also means the network path is reachable; it only means the probe did not send a valid API request.",
-        }
+        })
 
     def list_models(self, payload: dict[str, Any]) -> dict[str, Any]:
         role = str(payload.get("role") or "research").strip()
@@ -688,7 +802,7 @@ class ConsoleState:
             with urlopen(request, timeout=18) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
-            return {"ok": False, "provider": provider, "models": fallback, "error": str(exc)}
+            return redact_credentials({"ok": False, "provider": provider, "models": fallback, "error": str(exc)})
         raw_models = data.get("data", data if isinstance(data, list) else [])
         models: list[str] = []
         if isinstance(raw_models, list):
@@ -698,7 +812,7 @@ class ConsoleState:
                 elif isinstance(item, str):
                     models.append(item)
         models = sorted(dict.fromkeys(models))
-        return {"ok": True, "provider": provider, "base_url": config["base_url"], "models": models or fallback}
+        return redact_credentials({"ok": True, "provider": provider, "base_url": config["base_url"], "models": models or fallback})
 
     def model_env(self, role: str) -> dict[str, str]:
         config = self.role_model_config(role)
@@ -1625,15 +1739,18 @@ class ConsoleState:
             copy_count = max(len(records) - template_count, 0)
             if source_index > 0 and copy_count:
                 template = run_dir / "generic-template-expanded.pptx"
-                code, stdout, stderr = run_command([
-                    "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-File", str(skill_script("duplicate_ppt_slide.ps1")),
-                    "-InputPpt", str(paths["template"]),
-                    "-OutputPpt", str(template),
-                    "-SourceSlideIndex", str(source_index),
-                    "-CopyCount", str(copy_count),
-                    "-Engine", str(job.get("presentation_engine", "auto")),
-                ])
+                code, stdout, stderr = run_command(
+                    [
+                        "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                        "-File", str(skill_script("duplicate_ppt_slide.ps1")),
+                        "-InputPpt", str(paths["template"]),
+                        "-OutputPpt", str(template),
+                        "-SourceSlideIndex", str(source_index),
+                        "-CopyCount", str(copy_count),
+                        "-Engine", str(job.get("presentation_engine", "auto")),
+                    ],
+                    timeout=EXPORT_SUBPROCESS_TIMEOUT_SECONDS,
+                )
                 if code != 0:
                     raise RuntimeError(stderr or stdout or "PowerPoint 无法复制通用模板页。")
                 expanded_config = json.loads(json.dumps(config))
@@ -1665,21 +1782,24 @@ class ConsoleState:
                 command = self._briefing_export_command(job, paths, run_dir)
             else:
                 command = self._generic_export_command(job, paths, run_dir)
-            returncode, stdout, stderr = run_command(command)
+            returncode, stdout, stderr = run_command(command, timeout=EXPORT_SUBPROCESS_TIMEOUT_SECONDS)
             if returncode != 0:
                 raise RuntimeError(stderr or stdout or "PPTX生成失败。")
             preview_source = run_dir / "previews"
             if job.get("presentation_engine") != "compatible" and not any(preview_source.glob("*.png")):
-                preview_code, preview_stdout, preview_stderr = run_command([
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass",
-                    "-File", str(skill_script("export_ppt_previews.ps1")),
-                    "-InputPpt", str(job["output"]),
-                    "-PreviewDir", str(preview_source),
-                    "-Engine", str(job.get("presentation_engine", "auto")),
-                ])
+                preview_code, preview_stdout, preview_stderr = run_command(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy", "Bypass",
+                        "-File", str(skill_script("export_ppt_previews.ps1")),
+                        "-InputPpt", str(job["output"]),
+                        "-PreviewDir", str(preview_source),
+                        "-Engine", str(job.get("presentation_engine", "auto")),
+                    ],
+                    timeout=EXPORT_SUBPROCESS_TIMEOUT_SECONDS,
+                )
                 if preview_code != 0:
                     stderr = "\n".join(part for part in (stderr, preview_stderr or preview_stdout) if part)
             preview_target = paths["output"] / ".previews" / Path(job["filename"]).stem
@@ -1748,7 +1868,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.BAD_REQUEST
         else:
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-        self.send_json({"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}, status)
+        self.send_json({"ok": False, "error": redact_credentials(str(exc)), "error_type": exc.__class__.__name__}, status)
 
     def read_body(self, max_bytes: int = 5 * 1024 * 1024) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
@@ -1920,7 +2040,13 @@ class ConsoleServer(ThreadingHTTPServer):
         self.state = state
 
 
-def build_server(host: str, port: int, state: ConsoleState) -> ConsoleServer:
+def build_server(
+    host: str,
+    port: int,
+    state: ConsoleState,
+    allow_non_loopback: bool = False,
+) -> ConsoleServer:
+    host = validate_bind_host(host, allow_non_loopback=allow_non_loopback)
     if port == 0:
         return ConsoleServer((host, 0), state)
     last_error: OSError | None = None
@@ -1938,6 +2064,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5310, help="Preferred port; searches the next 19 ports if busy")
     parser.add_argument("--projects-root", default="console-projects")
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="Explicitly allow binding beyond the local machine.",
+    )
     return parser.parse_args()
 
 
@@ -1946,7 +2077,7 @@ def main() -> int:
     if not static_root().is_dir():
         raise FileNotFoundError(f"Control console assets are missing: {static_root()}")
     state = ConsoleState(Path(args.projects_root))
-    server = build_server(args.host, args.port, state)
+    server = build_server(args.host, args.port, state, allow_non_loopback=args.allow_non_loopback)
     url = f"http://{args.host}:{server.server_address[1]}/"
     print(f"PPT Template Batch Console: {url}")
     print(f"Projects: {state.projects_root}")

@@ -42,6 +42,13 @@ class PresetContractTests(unittest.TestCase):
         cls.build_feishu_agent_skill = importlib.util.module_from_spec(builder_spec)
         builder_spec.loader.exec_module(cls.build_feishu_agent_skill)
 
+        console_path = REPO_ROOT / "ppt-template-batch" / "scripts" / "control_console.py"
+        console_spec = importlib.util.spec_from_file_location("control_console", console_path)
+        if not console_spec or not console_spec.loader:
+            raise ImportError(f"Unable to load {console_path}")
+        cls.control_console = importlib.util.module_from_spec(console_spec)
+        console_spec.loader.exec_module(cls.control_console)
+
         yitu_path = REPO_ROOT / "yitu-quanjie" / "scripts" / "yitu_quanjie_replace.py"
         yitu_spec = importlib.util.spec_from_file_location("yitu_quanjie_replace", yitu_path)
         if not yitu_spec or not yitu_spec.loader:
@@ -970,3 +977,108 @@ class PresetContractTests(unittest.TestCase):
             self.assertIn("SKILL.md", names)
             self.assertTrue(names)
             self.assertTrue(all(name == "SKILL.md" or name.startswith("references/") for name in names))
+            self.assertIn("references/agent-runtime.md", names)
+            self.assertIn("references/input-schema.json", names)
+
+    def test_feishu_builder_rejects_missing_contract_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            package_root.mkdir()
+            (package_root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(ValueError, "required"):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_rejects_engine_and_extra_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            references = package_root / "references"
+            references.mkdir(parents=True)
+            (package_root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+            (references / "agent-runtime.md").write_text("runtime\n", encoding="utf-8")
+            (references / "input-schema.json").write_text("{}\n", encoding="utf-8")
+            (package_root / "engine").mkdir()
+            (package_root / "engine" / "runner.py").write_text("print('no')\n", encoding="utf-8")
+            (package_root / "README.md").write_text("no\n", encoding="utf-8")
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(ValueError, "Unsupported package paths"):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_contract_documents_stable_metadata(self):
+        skill_text = (REPO_ROOT / "feishu-agent-skill" / "SKILL.md").read_text(encoding="utf-8")
+        runtime_text = (REPO_ROOT / "feishu-agent-skill" / "references" / "agent-runtime.md").read_text(encoding="utf-8")
+        schema = json.loads((REPO_ROOT / "feishu-agent-skill" / "references" / "input-schema.json").read_text(encoding="utf-8"))
+
+        for field in ("contract_version", "sources", "verification_status", "warnings"):
+            self.assertIn(field, skill_text)
+            self.assertIn(field, runtime_text)
+            self.assertIn(field, schema["properties"])
+
+    def test_console_defaults_to_loopback_and_requires_opt_in_for_public_bind(self):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["run_control_console.py"]
+            args = self.control_console.parse_args()
+        finally:
+            sys.argv = old_argv
+        self.assertEqual(args.host, "127.0.0.1")
+        self.assertFalse(args.allow_non_loopback)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = self.control_console.ConsoleState(Path(temp_dir))
+            with self.assertRaisesRegex(ValueError, "loopback"):
+                self.control_console.build_server("0.0.0.0", 0, state)
+            server = self.control_console.build_server(
+                "0.0.0.0", 0, state, allow_non_loopback=True
+            )
+            server.server_close()
+
+    def test_console_model_payload_redacts_credentials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = self.control_console.ConsoleState(Path(temp_dir))
+            state.model_settings["unified_key"] = "super-secret-key"
+            state.model_settings["unified_base_url"] = "https://user:super-secret-key@example.invalid/v1?api_key=super-secret-key"
+
+            payload = state.model_settings_payload()
+            serialized = json.dumps(payload, ensure_ascii=False)
+
+        self.assertNotIn("super-secret-key", serialized)
+        self.assertIn("redacted", serialized.lower())
+
+    def test_console_json_writes_are_atomic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "state.json"
+            with patch.object(self.control_console.os, "replace", wraps=self.control_console.os.replace) as replace:
+                self.control_console.write_json(target, {"ok": True})
+
+            self.assertTrue(replace.called)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"ok": True})
+            self.assertEqual(list(Path(temp_dir).glob("*.tmp")), [])
+
+    def test_console_subprocesses_receive_bounded_timeouts(self):
+        completed = Namespace(returncode=0, stdout=b"", stderr=b"")
+        with patch.object(self.control_console.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(self.control_console.run_command(["helper"]), (0, "", ""))
+
+        self.assertIn("timeout", run.call_args.kwargs)
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
+
+    def test_console_diagnostic_child_has_explicit_timeout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = self.control_console.ConsoleState(Path(temp_dir))
+            with patch.object(self.control_console, "probe_base_url", return_value={
+                "ok": False, "reachable": False, "status": 0, "error": "offline"
+            }):
+                with patch.object(
+                    self.control_console,
+                    "run_command",
+                    return_value=(0, json.dumps({"reachable": False}), ""),
+                ) as run:
+                    state.diagnose_model_connection({"role": "research"})
+
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            self.control_console.DIAGNOSTIC_SUBPROCESS_TIMEOUT_SECONDS,
+        )
