@@ -943,6 +943,34 @@ class PresetContractTests(unittest.TestCase):
             self.assertTrue(report["ok"])
             self.assertFalse(any(item["target"] == "Wide Shape" for item in report["overflows"]))
 
+    def test_yitu_text_capacity_rejects_explicit_newline_beyond_vertical_capacity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(3), Inches(0.3))
+            shape.name = "Single Line Shape"
+            shape.text = "template"
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {"Single Line Shape": "A\nB"},
+            )
+
+            self.assertTrue(
+                any(
+                    item["target"] == "Single Line Shape"
+                    and item["kind"] == "shape"
+                    and item["required_lines"] > item["capacity_lines"]
+                    for item in report["overflows"]
+                )
+            )
+
     def test_yitu_validate_reports_invalid_table_coordinate_and_output_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

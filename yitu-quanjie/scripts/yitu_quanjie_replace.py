@@ -298,7 +298,10 @@ def validate_replacement(
         metrics = _text_metrics(shape.text_frame, new_text, shape.width, shape.height)
         capacity = text_capacity(shape)
         required = _weighted_text_length(new_text)
-        if capacity is not None and required > capacity:
+        line_overflow = bool(
+            metrics and metrics["required_lines"] > metrics["capacity_lines"]
+        )
+        if capacity is not None and (required > capacity or line_overflow):
             report["overflows"].append({
                 "target": name,
                 "kind": "shape",
@@ -339,7 +342,10 @@ def validate_replacement(
             capacity = text_capacity(cell, column_width, row_height)
             required = _weighted_text_length(new_text)
             metrics = _text_metrics(cell.text_frame, new_text, column_width, row_height)
-            if capacity is not None and required > capacity:
+            line_overflow = bool(
+                metrics and metrics["required_lines"] > metrics["capacity_lines"]
+            )
+            if capacity is not None and (required > capacity or line_overflow):
                 report["overflows"].append({
                     "target": key,
                     "kind": "table_cell",
