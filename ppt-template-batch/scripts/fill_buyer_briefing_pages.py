@@ -328,7 +328,7 @@ def main() -> int:
     parser.add_argument("--report", help="Optional export report JSON path")
     args = parser.parse_args()
 
-    mapping = DEFAULT_MAPPING
+    mapping = None
     if args.layout_config:
         mapping = load_json(Path(args.layout_config))
     fill_presentation(args.template, args.pages_json, args.output, args.report, mapping)

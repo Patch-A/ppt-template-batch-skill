@@ -721,6 +721,82 @@ class PresetContractTests(unittest.TestCase):
                 self.assertEqual(summary_run.font.bold, slot_styles[index][0])
                 self.assertEqual(summary_run.font.size.pt, slot_styles[index][1])
 
+    def test_buyer_briefing_cli_uses_embedded_mapping_without_explicit_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            pages_path = root / "pages.json"
+            explicit_mapping_path = root / "explicit-mapping.json"
+            embedded_output = root / "embedded-output.pptx"
+            explicit_output = root / "explicit-output.pptx"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            for index in range(6):
+                shape = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.4))
+                shape.text = f"stale {index + 1}"
+            presentation.save(template_path)
+
+            default_mapping = {
+                "title_shape": 1,
+                "buyers_per_slide": 1,
+                "slots": [{"summary_shape": 2, "products_shape": 3}],
+            }
+            embedded_mapping = {
+                "title_shape": 4,
+                "buyers_per_slide": 1,
+                "slots": [{"summary_shape": 5, "products_shape": 6}],
+            }
+            pages_path.write_text(
+                json.dumps({
+                    "pages": [{
+                        "title": "Embedded title",
+                        "buyers": [{
+                            "name": "Embedded buyer",
+                            "summary": "Embedded buyer summary",
+                            "products": "Embedded product",
+                        }],
+                    }],
+                    "mapping": embedded_mapping,
+                }),
+                encoding="utf-8",
+            )
+            explicit_mapping_path.write_text(json.dumps(default_mapping), encoding="utf-8")
+
+            old_argv = sys.argv
+            try:
+                with patch.object(self.fill_buyer_briefing_pages, "DEFAULT_MAPPING", default_mapping):
+                    sys.argv = [
+                        "fill_buyer_briefing_pages.py",
+                        str(template_path),
+                        str(pages_path),
+                        str(embedded_output),
+                    ]
+                    self.assertEqual(self.fill_buyer_briefing_pages.main(), 0)
+
+                    sys.argv = [
+                        "fill_buyer_briefing_pages.py",
+                        str(template_path),
+                        str(pages_path),
+                        str(explicit_output),
+                        "--layout-config",
+                        str(explicit_mapping_path),
+                    ]
+                    self.assertEqual(self.fill_buyer_briefing_pages.main(), 0)
+            finally:
+                sys.argv = old_argv
+
+            embedded_result = Presentation(embedded_output)
+            self.assertEqual(embedded_result.slides[0].shapes[3].text, "Embedded title")
+            self.assertEqual(embedded_result.slides[0].shapes[4].text, "Embedded buyer summary")
+            self.assertEqual(embedded_result.slides[0].shapes[5].text, "采购品类：Embedded product")
+
+            explicit_result = Presentation(explicit_output)
+            self.assertEqual(explicit_result.slides[0].shapes[0].text, "Embedded title")
+            self.assertEqual(explicit_result.slides[0].shapes[1].text, "Embedded buyer summary")
+            self.assertEqual(explicit_result.slides[0].shapes[2].text, "采购品类：Embedded product")
+            self.assertEqual(explicit_result.slides[0].shapes[3].text, "stale 4")
+
     def test_yitu_missing_shape_fails_without_writing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
