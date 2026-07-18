@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import tempfile
@@ -10,11 +11,29 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "feishu-agent-skill"
+INPUT_SCHEMA_PATH = Path("references/input-schema.json")
+EXPECTED_CONTRACT_VERSION = "1.0"
 REQUIRED_FILES = (
     Path("SKILL.md"),
     Path("references/agent-runtime.md"),
-    Path("references/input-schema.json"),
+    INPUT_SCHEMA_PATH,
 )
+
+
+def validate_input_schema(package_root: Path) -> None:
+    schema_path = package_root / INPUT_SCHEMA_PATH
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid JSON in {INPUT_SCHEMA_PATH.as_posix()}") from exc
+
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    contract_schema = properties.get("contract_version") if isinstance(properties, dict) else None
+    if not isinstance(contract_schema, dict) or contract_schema.get("default") != EXPECTED_CONTRACT_VERSION:
+        raise ValueError(
+            f'Invalid contract_version in {INPUT_SCHEMA_PATH.as_posix()}: '
+            f'expected "{EXPECTED_CONTRACT_VERSION}"'
+        )
 
 
 def validate_package(source: Path) -> list[Path]:
@@ -47,6 +66,7 @@ def validate_package(source: Path) -> list[Path]:
 
     if unsupported:
         raise ValueError(f"Unsupported package paths: {', '.join(unsupported)}")
+    validate_input_schema(package_root)
     return files
 
 

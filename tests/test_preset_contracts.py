@@ -1257,6 +1257,88 @@ class PresetContractTests(unittest.TestCase):
             self.assertIn("references/agent-runtime.md", names)
             self.assertIn("references/input-schema.json", names)
 
+    @staticmethod
+    def _write_feishu_test_package(package_root, schema_text=None):
+        references = package_root / "references"
+        references.mkdir(parents=True)
+        (package_root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (references / "agent-runtime.md").write_text("runtime\n", encoding="utf-8")
+        if schema_text is not None:
+            (references / "input-schema.json").write_text(schema_text, encoding="utf-8")
+
+    def test_feishu_builder_rejects_missing_input_schema_for_build_and_validate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            self._write_feishu_test_package(package_root)
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(
+                    ValueError, r"Missing required package files: references/input-schema\.json"
+                ):
+                    self.build_feishu_agent_skill.validate_package(package_root)
+                with self.assertRaisesRegex(
+                    ValueError, r"Missing required package files: references/input-schema\.json"
+                ):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_rejects_invalid_input_schema_json_for_build_and_validate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            self._write_feishu_test_package(package_root, "{\n")
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(
+                    ValueError, r"Invalid JSON in references/input-schema\.json"
+                ):
+                    self.build_feishu_agent_skill.validate_package(package_root)
+                with self.assertRaisesRegex(
+                    ValueError, r"Invalid JSON in references/input-schema\.json"
+                ):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_rejects_unsupported_contract_version_for_build_and_validate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            self._write_feishu_test_package(
+                package_root,
+                json.dumps(
+                    {"properties": {"contract_version": {"default": "2.0"}}}
+                ),
+            )
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r'Invalid contract_version in references/input-schema\.json: expected "1\.0"',
+                ):
+                    self.build_feishu_agent_skill.validate_package(package_root)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r'Invalid contract_version in references/input-schema\.json: expected "1\.0"',
+                ):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_accepts_contract_version_1_0_for_build_and_validate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            self._write_feishu_test_package(
+                package_root,
+                json.dumps(
+                    {"properties": {"contract_version": {"default": "1.0"}}}
+                ),
+            )
+            output = Path(temp_dir) / "skill.zip"
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                files = self.build_feishu_agent_skill.validate_package(package_root)
+                built = self.build_feishu_agent_skill.build(output)
+
+            self.assertEqual(built, output.resolve())
+            self.assertEqual(
+                {item.relative_to(package_root).as_posix() for item in files},
+                {"SKILL.md", "references/agent-runtime.md", "references/input-schema.json"},
+            )
+
     def test_feishu_builder_rejects_missing_contract_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             package_root = Path(temp_dir) / "package"
