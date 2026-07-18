@@ -36,6 +36,14 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8-sig")
 
 
+def report_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
 def run(cmd: list[str]) -> tuple[str, str]:
     result = subprocess.run(cmd, capture_output=True, text=False)
     stdout = decode_output(result.stdout)
@@ -86,14 +94,20 @@ def run_single_job(job: dict[str, Any], default_args: argparse.Namespace, index:
     if default_args.strict or job.get("strict"):
         cmd.append("--strict")
 
+    previous_report_signature = report_signature(report_path)
     try:
         run(cmd)
     except RuntimeError:
         # The filler writes its structured report before returning a strict
         # validation failure. Preserve that report so non-strict batches can
         # continue and callers can see the failed records.
-        if not report_path.exists():
+        if report_signature(report_path) in (None, previous_report_signature):
             raise
+    current_report_signature = report_signature(report_path)
+    if current_report_signature is None:
+        raise RuntimeError(f"Filler completed without writing a report: {report_path}")
+    if current_report_signature == previous_report_signature:
+        raise RuntimeError(f"Filler did not write a fresh report: {report_path}")
     report = load_json(report_path) if report_path.exists() else {}
     return {
         "index": index,

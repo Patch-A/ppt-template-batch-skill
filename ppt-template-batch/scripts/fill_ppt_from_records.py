@@ -326,10 +326,15 @@ def iter_text_targets(slide):
         if getattr(shape, "has_table", False):
             for row_index, row in enumerate(shape.table.rows):
                 for col_index, cell in enumerate(row.cells):
-                    yield shape, cell.text_frame, (row_index, col_index)
+                    yield shape, cell.text_frame, {
+                        "row": row_index,
+                        "col": col_index,
+                        "width": int(shape.table.columns[col_index].width),
+                        "height": int(shape.table.rows[row_index].height),
+                    }
 
 
-def _text_capacity_warning(shape, text_frame, slide_index: int, cell: tuple[int, int] | None):
+def _text_capacity_warning(shape, text_frame, slide_index: int, cell: dict[str, int] | None):
     text = text_frame.text or ""
     if not text.strip() or not getattr(shape, "width", 0) or not getattr(shape, "height", 0):
         return None
@@ -339,8 +344,10 @@ def _text_capacity_warning(shape, text_frame, slide_index: int, cell: tuple[int,
         if paragraph.runs and paragraph.runs[0].font.size:
             font_size_pt = max(float(paragraph.runs[0].font.size.pt), 1.0)
             break
-    width_pt = max(float(shape.width) / 12700, 1.0)
-    height_pt = max(float(shape.height) / 12700, 1.0)
+    target_width = cell["width"] if cell is not None else shape.width
+    target_height = cell["height"] if cell is not None else shape.height
+    width_pt = max(float(target_width) / 12700, 1.0)
+    height_pt = max(float(target_height) / 12700, 1.0)
     chars_per_line = max(int(width_pt / (font_size_pt * 0.6)), 1)
     line_capacity = max(int(height_pt / (font_size_pt * 1.2)), 1)
     estimated_lines = sum(
@@ -358,7 +365,8 @@ def _text_capacity_warning(shape, text_frame, slide_index: int, cell: tuple[int,
         "text_length": len(text),
     }
     if cell is not None:
-        item["row"], item["col"] = cell
+        item["row"] = cell["row"]
+        item["col"] = cell["col"]
     return item
 
 
@@ -379,7 +387,8 @@ def scan_shared_preflight(presentation: Presentation, report: dict[str, Any]) ->
                     "reason": "unresolved_placeholder" if unresolved else "template_marker",
                 }
                 if cell is not None:
-                    item["row"], item["col"] = cell
+                    item["row"] = cell["row"]
+                    item["col"] = cell["col"]
                 report.setdefault("stale_template_text", []).append(item)
                 report.setdefault("warnings", []).append(
                     f"Stale template text remains on slide {slide_index} in {shape.name!r}."
@@ -726,8 +735,11 @@ def fill_presentation(
         "reopen": {"status": "not_run", "ok": False},
     }
 
+    repeat = config.get("repeat") or {}
+    max_records = int(repeat["max_records"]) if "max_records" in repeat else len(records)
+    validation_records = records[:max_records] if config.get("repeat") else records
     required_fields = config.get("required_fields") or []
-    failed_indexes = validate_required_fields(records, required_fields, report)
+    failed_indexes = validate_required_fields(validation_records, required_fields, report)
 
     presentation = Presentation(template)
     report["expected_slide_count"] = len(presentation.slides)
@@ -744,7 +756,7 @@ def fill_presentation(
 
     effective_records = [
         (record_index, record)
-        for record_index, record in enumerate(records, start=1)
+        for record_index, record in enumerate(validation_records, start=1)
         if strict or record_index not in failed_indexes
     ]
     report["processed_record_count"] = len(effective_records)
@@ -776,10 +788,9 @@ def fill_presentation(
         apply_slide_mapping(presentation.slides[slide_index], slide_mapping, context, paths_base, workspace, report)
         report["slides_processed"] += 1
 
-    repeat = config.get("repeat")
     if repeat:
         start_index = int(repeat.get("start_slide_index") or repeat.get("source_slide_index")) - 1
-        record_count = min(len(records), int(repeat.get("max_records", len(records))))
+        record_count = len(effective_records)
         mappings = {
             "placeholders": repeat.get("placeholders") or {},
             "texts": repeat.get("texts") or repeat.get("mappings", {}).get("texts", []),

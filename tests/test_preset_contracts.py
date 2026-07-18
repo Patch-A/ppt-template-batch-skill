@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from argparse import Namespace
+from unittest.mock import patch
 
 from pptx import Presentation
 from pptx.util import Inches
@@ -266,6 +268,43 @@ class PresetContractTests(unittest.TestCase):
             self.assertEqual(report["slide_count"], 1)
             self.assertIs(report["reopen_ok"], True)
 
+    def test_pipeline_does_not_reuse_stale_report_after_runner_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            stale_report = root / "fill-report.json"
+            stale_report.write_text(
+                json.dumps({"ok": True, "record_count": 999}), encoding="utf-8"
+            )
+            job = {
+                "template": str(root / "template.pptx"),
+                "records": str(root / "records.json"),
+                "layout_config": str(root / "layout-config.json"),
+                "output": str(root / "output.pptx"),
+                "report": str(stale_report),
+            }
+            defaults = Namespace(
+                template=None,
+                records=None,
+                layout_config=None,
+                output=None,
+                output_dir=None,
+                workspace=None,
+                strict=False,
+            )
+
+            with patch.object(
+                self.run_ppt_batch_pipeline,
+                "run",
+                side_effect=RuntimeError("simulated filler failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated filler failure"):
+                    self.run_ppt_batch_pipeline.run_single_job(job, defaults, 1)
+
+            self.assertEqual(
+                json.loads(stale_report.read_text(encoding="utf-8")),
+                {"ok": True, "record_count": 999},
+            )
+
     def test_non_strict_repeat_skips_failed_records_and_reports_them(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -311,6 +350,88 @@ class PresetContractTests(unittest.TestCase):
             result = Presentation(output)
             self.assertEqual(len(result.slides), 1)
             self.assertEqual(result.slides[0].shapes[0].text, "Good")
+
+    def test_repeat_max_records_truncates_before_filtering_failed_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template = root / "template.pptx"
+            records = root / "records.json"
+            config = root / "layout-config.json"
+            output = root / "output.pptx"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            name_shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+            name_shape.name = "Record name"
+            name_shape.text = "template name"
+            presentation.save(template)
+            records.write_text(
+                json.dumps({"records": [{}, {"name": "B"}, {"name": "C"}]}),
+                encoding="utf-8",
+            )
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "required_fields": ["name"],
+                        "repeat": {
+                            "source_slide_index": 1,
+                            "start_slide_index": 1,
+                            "template_slide_count": 1,
+                            "max_records": 2,
+                            "texts": [
+                                {
+                                    "selector": {"name": "Record name", "role": "text"},
+                                    "field": "name",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = self.fill_ppt_from_records.fill_presentation(
+                template, records, config, output, root / "workspace"
+            )
+
+            self.assertEqual(report["failed_records"], [{"record_index": 1, "missing_required_fields": ["name"]}])
+            result = Presentation(output)
+            self.assertEqual(len(result.slides), 1)
+            self.assertEqual(result.slides[0].shapes[0].text, "B")
+
+    def test_table_cell_capacity_uses_column_and_row_dimensions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template = root / "template.pptx"
+            records = root / "records.json"
+            config = root / "layout-config.json"
+            output = root / "output.pptx"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            table_shape = slide.shapes.add_table(
+                1, 2, Inches(1), Inches(1), Inches(7), Inches(2)
+            )
+            table_shape.name = "Wide table"
+            table_shape.table.columns[0].width = Inches(0.25)
+            table_shape.table.columns[1].width = Inches(6.75)
+            table_shape.table.rows[0].height = Inches(2)
+            table_shape.table.cell(0, 0).text = "narrow cell " + ("x" * 200)
+            presentation.save(template)
+            records.write_text(json.dumps({"records": []}), encoding="utf-8")
+            config.write_text(json.dumps({"schema_version": 2, "slides": []}), encoding="utf-8")
+
+            report = self.fill_ppt_from_records.fill_presentation(
+                template, records, config, output, root / "workspace"
+            )
+
+            self.assertTrue(
+                any(
+                    warning.get("row") == 0 and warning.get("col") == 0
+                    for warning in report["capacity_warnings"]
+                )
+            )
 
     def test_non_strict_failed_slide_is_cleared_instead_of_preserving_template_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
