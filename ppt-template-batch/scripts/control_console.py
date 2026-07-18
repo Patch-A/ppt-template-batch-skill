@@ -205,7 +205,7 @@ def _redact_url(value: str) -> str:
             port = f":{parsed.port}" if parsed.port is not None else ""
         except ValueError:
             port = ""
-        userinfo = f"{quote(parsed.username, safe='')}:{REDACTED}@" if parsed.username or parsed.password else ""
+        userinfo = ""
         query = []
         for key, item in parse_qsl(parsed.query, keep_blank_values=True):
             query.append((key, REDACTED if _sensitive_key(key) else item))

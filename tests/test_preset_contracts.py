@@ -1472,6 +1472,24 @@ class PresetContractTests(unittest.TestCase):
         self.assertNotIn("super-secret-key", serialized)
         self.assertIn("redacted", serialized.lower())
 
+    def test_console_redact_payload_removes_username_only_and_password_userinfo(self):
+        redact_payload = self.control_console.redact_credentials
+
+        username_only = redact_payload({
+            "url": "https://username-only-secret@example.invalid/v1",
+        })["url"]
+        with_password = redact_payload({
+            "url": "https://visible-user:visible-password@example.invalid:8443/v1",
+        })["url"]
+        ordinary = redact_payload({
+            "url": "https://example.invalid:8443/v1",
+        })["url"]
+
+        self.assertNotIn("username-only-secret", username_only)
+        self.assertNotIn("@", username_only)
+        self.assertEqual(with_password, "https://example.invalid:8443/v1")
+        self.assertEqual(ordinary, "https://example.invalid:8443/v1")
+
     def test_console_json_writes_are_atomic(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "state.json"
