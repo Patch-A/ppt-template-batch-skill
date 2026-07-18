@@ -998,6 +998,32 @@ class PresetContractTests(unittest.TestCase):
                     self.assertTrue(overflows)
                     self.assertEqual(overflows[0]["required_lines"], 2.0)
 
+    def test_yitu_weighted_width_treats_lf_and_crlf_as_equal_for_two_ascii_lines(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(3), Inches(0.6))
+            shape.name = "Two Line Shape"
+            shape.text = "template"
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
+            presentation.save(template_path)
+
+            line = "A" * 32
+            reports = {}
+            for newline in ("\n", "\r\n"):
+                replacement = newline.join((line, line))
+                reports[newline] = self.yitu_quanjie_replace.validate_replacement(
+                    template_path,
+                    root / f"output-{len(newline)}.pptx",
+                    {"Two Line Shape": replacement},
+                )
+
+            self.assertTrue(reports["\n"]["ok"], reports["\n"])
+            self.assertTrue(reports["\r\n"]["ok"], reports["\r\n"])
+            self.assertEqual(reports["\n"]["overflows"], reports["\r\n"]["overflows"])
+
     def test_yitu_validate_reports_invalid_table_coordinate_and_output_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

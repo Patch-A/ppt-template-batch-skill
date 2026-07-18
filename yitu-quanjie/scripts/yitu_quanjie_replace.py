@@ -99,15 +99,14 @@ def _font_size_pt(text_frame: Any, default: float = 14.0) -> float:
 
 def _weighted_text_length(value: str) -> float:
     total = 0.0
-    for char in value:
-        if char == "\n":
-            continue
-        if unicodedata.east_asian_width(char) in {"W", "F"}:
-            total += 1.0
-        elif char.isspace():
-            total += 0.3
-        else:
-            total += 0.55
+    for line in split_text_lines(value):
+        for char in line:
+            if unicodedata.east_asian_width(char) in {"W", "F"}:
+                total += 1.0
+            elif char.isspace():
+                total += 0.3
+            else:
+                total += 0.55
     return total
 
 
