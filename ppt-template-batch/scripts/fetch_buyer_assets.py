@@ -86,6 +86,14 @@ MIN_IMAGE_BYTES = 5 * 1024
 MIN_LOGO_BYTES = 512
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_RESPONSE_BYTES = MAX_IMAGE_BYTES
+STABLE_DOWNLOAD_FAILURE_REASONS = frozenset(
+    {
+        "response_too_large",
+        "different_host",
+        "local_host",
+        "non_public_ip",
+    }
+)
 MIN_VISUAL_WIDTH = 240
 MIN_VISUAL_HEIGHT = 140
 MIN_LOGO_WIDTH = 60
@@ -950,6 +958,9 @@ def download_asset(candidate: AssetCandidate, output_path: Path, kind: str) -> t
             base_host = urlparse(candidate.page).hostname or ""
             final_url, body, content_type = fetch_url(candidate.src, max_bytes=MAX_IMAGE_BYTES, base_host=base_host)
     except Exception as exc:
+        reason = str(exc)
+        if isinstance(exc, ValueError) and reason in STABLE_DOWNLOAD_FAILURE_REASONS:
+            return None, {"reason": reason}
         return None, {"reason": f"download_failed:{exc.__class__.__name__}"}
     if not content_type.startswith("image/"):
         return None, {"reason": f"not_image:{content_type}"}

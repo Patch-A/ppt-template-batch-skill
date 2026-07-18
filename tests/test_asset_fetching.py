@@ -41,6 +41,50 @@ class AssetFetchingRegressionTests(unittest.TestCase):
 
         self.assertIn(candidate, ranked)
 
+    def test_download_asset_preserves_stable_fetch_rejection_reasons(self):
+        candidate = self.AssetCandidate(
+            src="https://acme.com/assets/acme-logo.svg",
+            page="https://acme.com",
+            kind="image",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for reason in ("response_too_large", "different_host"):
+                with self.subTest(reason=reason), patch.object(
+                    self.fetch_buyer_assets,
+                    "fetch_url",
+                    side_effect=ValueError(reason),
+                ):
+                    downloaded, meta = self.fetch_buyer_assets.download_asset(
+                        candidate,
+                        Path(temp_dir) / "acme-logo",
+                        "logo",
+                    )
+
+                self.assertIsNone(downloaded)
+                self.assertEqual(meta, {"reason": reason})
+
+    def test_download_asset_keeps_type_only_for_unclassified_fetch_errors(self):
+        candidate = self.AssetCandidate(
+            src="https://acme.com/assets/acme-logo.svg",
+            page="https://acme.com",
+            kind="image",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            self.fetch_buyer_assets,
+            "fetch_url",
+            side_effect=RuntimeError("connection failed"),
+        ):
+            downloaded, meta = self.fetch_buyer_assets.download_asset(
+                candidate,
+                Path(temp_dir) / "acme-logo",
+                "logo",
+            )
+
+        self.assertIsNone(downloaded)
+        self.assertEqual(meta, {"reason": "download_failed:RuntimeError"})
+
     def test_logo_only_cache_entry_retries_missing_site_asset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
