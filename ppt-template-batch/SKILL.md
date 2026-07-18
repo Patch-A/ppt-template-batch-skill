@@ -139,7 +139,7 @@ Generic configs use `schema_version: 2`. Prefer `selector: {"name": "...", "role
 Treat images as a separate pass:
 
 - replace only approved placeholder slots
-- Asset fetching should stay bounded: use light HTML fetching by default, extract official inline SVG marks when available, keep browser fallback explicitly opt-in for slow sites, and enforce a per-buyer timeout. Use `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
+- Asset fetching should stay bounded: use the controlled light HTML path, extract official inline SVG marks when available, and enforce a per-buyer timeout. `asset_mode=auto` and `asset_mode=browser` remain accepted for CLI compatibility but never start Playwright or browser navigation; they safely skip the browser path and record `browser_skip:network_unsafe` when it is reached. Use `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
 - Asset URLs must be `http` or `https`. Before each request, reject localhost and non-public IP literals or DNS results, including loopback, private, link-local, reserved, multicast, and unspecified addresses; validate the final URL of every redirect and keep redirects on the validated site by default. DNS resolution is bounded, curl pins the validated public address, redirects are capped at 5 hops, and Python, curl, and inline data reads are capped at 8 MiB.
 - Never accept a logo solely because its filename contains `logo`: reject certification seals, government badges, sale-notice marks, banners, and low-confidence brand mismatches. Prefer a verified official brand mark, and leave the Logo slot empty when confidence is insufficient.
 - Match the exact enterprise, not only the website domain: reject subsidiary and business-unit logos when the requested profile is for the parent company.
@@ -148,7 +148,7 @@ Treat images as a separate pass:
 - crop or pad right-side visuals before placement so they do not overflow
 - clear stale placeholder graphics when no verified asset is available
 
-For buyer-board asset discovery, use `scripts/fetch_buyer_assets.py`, then use PowerPoint COM or the Python fallback image placer.
+For buyer-board asset discovery, use `scripts/fetch_buyer_assets.py --asset-mode light`, then use PowerPoint COM or the Python fallback image placer. Do not install Chromium or expect browser-based recovery; browser-related CLI values are compatibility-only and are safety-skipped.
 
 ### 7. Use buyer presets only when relevant
 
@@ -207,14 +207,14 @@ For the separate `yitu-quanjie` preset, run `yitu-quanjie/scripts/yitu_quanjie_r
 When a run behaves differently in WorkBuddy, Windows, or a sandboxed environment, run:
 
 - `scripts/doctor.py`
-- `scripts/recover_real_assets.py` or `scripts/recover_real_assets.ps1` when a buyer-board PPT completed but real website assets were blocked
+- inspect `asset_fetch_report.json` when a buyer-board PPT completed with missing real website assets
 
 Check:
 
 - Python modules
 - PowerPoint COM availability
 - network access
-- Playwright browser runtime
+- controlled asset-fetch mode and `browser_skip:network_unsafe` notes
 - model provider, Base URL, selected model, and API key visibility when research or AI visual fallback is needed
 
 ### 9. Verify every output

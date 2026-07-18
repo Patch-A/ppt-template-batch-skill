@@ -44,7 +44,7 @@ Choose the local presentation engine, validate required data and mappings, then 
 - `scripts/run_ppt_batch_pipeline.py`: generic one-click pipeline for config-driven PPT filling.
 - `scripts/run_control_console.py`: local browser control console for project setup, editing, and export.
 - `scripts/run_buyer_board_pipeline.py`: buyer-board preset one-click pipeline.
-- `scripts/recover_real_assets.py`: buyer-board asset recovery helper when sandboxed runs cannot fetch real web assets.
+- `scripts/recover_real_assets.py`: controlled light-mode asset retry helper; its browser mode is retained for CLI compatibility and is safety-skipped.
 
 ## Core workflow
 
@@ -192,7 +192,7 @@ This preset supports:
 - country + procurement-need driven buyer research
 - structured buyer text filling
 - public website logo and visual fetching
-- optional Playwright-enhanced asset fetching
+- controlled light-mode asset fetching; `auto` and `browser` remain accepted for CLI compatibility but are safety-skipped when they would use a browser path
 - asset cache reuse through `asset-cache.json`
 - per-run asset report through `asset_fetch_report.json`
 - PowerPoint COM image placement with Python fallback
@@ -265,11 +265,7 @@ Install dependencies first:
 pip install -r requirements.txt
 ```
 
-Optional for browser-enhanced asset discovery:
-
-```bash
-playwright install chromium
-```
+Do not install Playwright or Chromium for buyer-board asset discovery. The browser path is disabled for network safety; use the controlled light fetcher and inspect `asset_fetch_report.json` when an asset is unavailable.
 
 Set API keys only when using buyer research or AI visual fallback. The control console stores keys only in the current local process and never writes them to project files.
 
@@ -303,7 +299,7 @@ The report checks:
 - Python modules
 - `OPENAI_API_KEY` visibility
 - public website access
-- Playwright and Chromium runtime
+- controlled asset-fetch mode and `browser_skip:network_unsafe` notes
 - PowerPoint COM automation
 
 Python requests now fall back to the system `curl` executable automatically when available. To force the old behavior, set:
@@ -312,27 +308,13 @@ Python requests now fall back to the system `curl` executable automatically when
 $env:BUYER_BOARD_DISABLE_CURL_FALLBACK="1"
 ```
 
-Asset mode is intentionally staged: `auto` uses lightweight HTML parsing first, extracts real inline header SVG logos, and only enables the Playwright path when `$env:BUYER_BOARD_ENABLE_BROWSER_FALLBACK="1"` is explicitly set. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
+Asset mode is intentionally safety-first: `light` is the only active network asset path and uses controlled HTML fetching. `asset_mode=browser` remains a CLI-compatible value but never starts Playwright or browser navigation; it safely skips and records `browser_skip:network_unsafe`. `asset_mode=auto` runs the light pass first; its browser-fallback branch is also compatibility-only and safely skips browser navigation, recording `browser_skip:network_unsafe` when that branch is reached (or `browser_skip:auto_browser_fallback_disabled` when the fallback is disabled). Do not install Chromium or expect browser-based asset recovery. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
 
 Asset URL safety is enforced before every download and after every redirect: only `http` and `https` are accepted; `localhost`, loopback, private, link-local, reserved, multicast, unspecified, and other non-public DNS results are rejected; resolved public addresses are pinned for the curl request; and redirects stay on the validated site by default. DNS resolution has its own deadline, redirect chains are capped at 5 hops, and Python, curl, and inline data paths cap retained response data at 8 MiB. Oversized responses are rejected before they become retained assets.
 
 ## Buyer asset recovery
 
-If a buyer-board run finishes with missing real logos or website visuals because the sandbox blocked network access, rerun only the asset stage locally:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/recover_real_assets.ps1 `
-  -Workspace "output/workspace" `
-  -AssetMode browser
-```
-
-Equivalent Python command:
-
-```bash
-python scripts/recover_real_assets.py ^
-  --workspace "output/workspace" ^
-  --asset-mode browser
-```
+Browser-based recovery is disabled. `scripts/recover_real_assets.py` and its PowerShell wrapper retain browser-related CLI values for compatibility, but a browser-mode retry is safety-skipped and records `browser_skip:network_unsafe`; do not install Chromium or use browser recovery to fetch assets. For missing assets, inspect `asset_fetch_report.json`, retry only the controlled light mode when appropriate, or leave the slot empty until a verified asset is available.
 
 ## Output artifacts
 
@@ -357,7 +339,7 @@ Depending on the workflow, the workspace may contain:
 - Public website asset fetching is best-effort and depends on local network permissions.
 - Logo selection rejects certification seals, government badges, banners, unrelated business units, subsidiary brands, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
 - Buyer-board procurement products are normalized to concrete purchasable equipment rather than umbrella categories. Product and bio table rows are sized from actual text length so short values do not retain oversized blank rows.
-- Browser-enhanced fetching improves dynamic-site coverage but increases runtime and local dependency weight. Enable it only for sites whose light HTML pass reports a missing asset.
+- Browser/Playwright asset fetching is disabled. `auto` and `browser` remain compatibility values only; they never start browser network access and report the safety skip.
 - `asset_fetch_report.json` records `logo_confidence`, `logo_source`, `logo_url`, rejected candidates, and timeout/network notes for manual review.
 - AI right-side visual fallback is opt-in and does not generate logos.
 - When no verified image is available, the workflow should clear risky stale placeholders rather than inventing fake brand assets.
@@ -390,4 +372,4 @@ This repository is public. Other users can clone it, download the ZIP, install t
 
 ## Actual buyer selection
 
-Buyer research should not treat every manufacturer as a buyer. Prefer actual procurement accounts: end users, distributors/importers/resellers, EPC or project developers, integrators, maintenance contractors, and manufacturers only when they clearly purchase the requested product as equipment, components, consumables, spare parts, or resale inventory. Asset fetching defaults to lightweight HTML parsing; browser fallback is opt-in to avoid slow or stuck website crawls.
+Buyer research should not treat every manufacturer as a buyer. Prefer actual procurement accounts: end users, distributors/importers/resellers, EPC or project developers, integrators, maintenance contractors, and manufacturers only when they clearly purchase the requested product as equipment, components, consumables, spare parts, or resale inventory. Asset fetching uses controlled lightweight HTML parsing; browser/Playwright fallback is disabled and retained only as a compatibility surface that records the safety skip.

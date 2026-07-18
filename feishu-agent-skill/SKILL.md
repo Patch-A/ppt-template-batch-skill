@@ -84,4 +84,6 @@ description: 通用 PowerPoint 模板批量处理智能体技能。接收 PPT/PP
 
 当任务涉及公开 URL 时，只使用 `http`/`https`，不访问 localhost、回环、私有、链路本地或其他非公网地址，也不绕过平台对 DNS 和重定向的安全限制。桌面资产抓取器会对 DNS 结果逐一校验并固定公网地址，限制重定向为 5 跳、单次响应为 8 MiB；Feishu/Aily 不调用该下载器，无法确认的素材标记为 `pending` 或 `unavailable`。
 
+桌面端的 `asset_mode=browser` 和 `auto` browser fallback 仅保留 CLI 兼容性，均不启动 Playwright 或浏览器网络；安全跳过时记录 `browser_skip:network_unsafe`。Feishu/Aily 继续使用平台原生搜索、图片搜索/生图、幻灯片编辑和导出能力，不依赖该桌面资产路径。
+
 `yitu-quanjie/scripts/yitu_quanjie_replace.py --dry-run` 是桌面端确定性预检入口，只负责本地模板的 shape、表格坐标、容量、行高和输出路径校验，打印 JSON 且不创建输出文件；Feishu/Aily 任务应使用平台原生的页面校验和报告，不要把该 Python CLI 当作 portable skill 的依赖。

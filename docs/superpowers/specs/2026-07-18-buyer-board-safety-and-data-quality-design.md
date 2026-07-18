@@ -15,6 +15,7 @@
 - 对主机名执行有界 DNS 解析，所有解析结果都必须是公网地址；curl 使用经过校验的公网地址固定连接。
 - 对跟随重定向后的每一跳重新执行同样的安全校验；默认不接受跨主机重定向到非官方资源，最多跟随 5 跳。
 - Python、curl、Data URI 三条下载路径都执行 8 MiB 响应大小上限，超限时在内存和磁盘写入前终止。
+- `asset_mode=browser` 与 `auto` 的 browser fallback 仅保留 CLI 兼容性，不启动 Playwright 或浏览器网络；安全跳过时记录 `browser_skip:network_unsafe`。
 - 保留现有每买家和全局时间预算。
 
 ### 资产缓存与报告
@@ -60,7 +61,7 @@
 - 统一 generic、buyer_board、buyer_briefing 三种模式的输入输出协议、来源字段和人工核验状态。
 - 明确原生搜索、图片搜索、幻灯片编辑能力不可用时的降级路径，不伪造来源或图片。
 - 构建 ZIP 时检查版本、必需文件和禁止携带的桌面运行时依赖，保持包与桌面引擎职责分离。
-- Feishu/Aily 使用平台原生搜索、图片、幻灯片和导出能力；桌面 Python/PPTX、Playwright、DNS 固定下载器和 Yitu `--dry-run` 只属于本地执行路径，不作为 portable ZIP 依赖。
+- Feishu/Aily 使用平台原生搜索、图片、幻灯片和导出能力；桌面 Python/PPTX、受控 light 资产抓取、DNS 固定下载器和 Yitu `--dry-run` 只属于本地执行路径，不作为 portable ZIP 依赖。桌面 browser/Playwright 资产路径已禁用，CLI 兼容值只记录安全跳过。
 
 ### 控制台与基础设施
 
@@ -79,7 +80,7 @@
 
 1. 根据模式选择通用字段映射或对应预设规则，不把买家规则应用到 generic 或一图全解。
 2. 买家研究输出经过产品、简介和来源字段规范化。
-3. 资产抓取先规范化 URL，再执行安全校验、下载上限和候选过滤。
+3. 资产抓取仅使用受控 light 路径：先规范化 URL，再执行安全校验、下载上限和候选过滤；`browser` 与 `auto` browser fallback 不启动浏览器网络，安全跳过并记录 `browser_skip:network_unsafe`。
 4. 资产结果按 Logo/站点图独立写入缓存和买家记录。
 5. 所有模式通过统一 preflight 生成字段、容量、残留、页数和输出完整性报告。
 6. 回归测试覆盖纯函数、缓存短路、资源下载边界、三种预设和最小 PPTX 产物。
@@ -102,13 +103,13 @@
 
 - 保持现有 JSON 字段名和 CLI 参数；仅新增报告字段或内部状态。
 - 旧缓存缺少新字段时按缓存未命中或空状态处理，不删除用户已有资产。
-- 默认资产模式和浏览器回退开关保持不变。
+- 保留 `light`、`auto`、`browser` CLI 参数及相关环境变量的兼容性；实际资产网络路径仅为受控 light 抓取，browser/Playwright 路径禁用并记录安全跳过，不安装 Chromium 或使用 browser 恢复资产。
 
 ## 执行边界
 
 | 路径 | 执行能力 | 不承担的职责 |
 | --- | --- | --- |
-| 桌面端 | Python/PPTX filler、控制台、受限资产抓取、可选 COM 或 Python 图片放置、Yitu dry-run | 不替代 Feishu/Aily 的原生搜索和幻灯片能力 |
+| 桌面端 | Python/PPTX filler、控制台、受限 light 资产抓取、可选 COM 或 Python 图片放置、Yitu dry-run | 不替代 Feishu/Aily 的原生搜索和幻灯片能力；browser/Playwright 资产路径已禁用 |
 | Feishu/Aily | 原生搜索、图片搜索/生图、幻灯片编辑和导出；输出合同字段与来源状态 | 不安装或调用 Python、`python-pptx`、Playwright、远程模型 CLI 或桌面资产下载脚本 |
 
 涉及外部企业资料或图片的两条路径都必须保留 `sources`、`verification_status` 和 `warnings`，无法核验的内容只能标记待核验/不可用，不得写成已证实事实。
