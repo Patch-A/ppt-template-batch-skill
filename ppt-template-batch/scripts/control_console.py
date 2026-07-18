@@ -1711,8 +1711,8 @@ class ConsoleState:
             if not isinstance(page, dict):
                 raise ValueError(_u(r"\u7b2c") + str(page_index) + _u(r"\u9875\u4e70\u5bb6\u5546\u60c5\u6570\u636e\u683c\u5f0f\u4e0d\u6b63\u786e\u3002"))
             buyers = page.get("buyers")
-            if not isinstance(buyers, list) or len(buyers) != 6:
-                raise ValueError(_u(r"\u7b2c") + str(page_index) + _u(r"\u9875\u5fc5\u987b\u6b63\u597d\u586b\u51996\u5bb6\u4e70\u5bb6\u3002"))
+            if not isinstance(buyers, list) or not 1 <= len(buyers) <= 6:
+                raise ValueError(_u(r"\u7b2c") + str(page_index) + _u(r"\u9875\u5fc5\u987b\u586b\u51991-6\u5bb6\u4e70\u5bb6\u3002"))
             for buyer_index, buyer in enumerate(buyers, start=1):
                 if not isinstance(buyer, dict) or not str(buyer.get("name", "")).strip():
                     raise ValueError(_u(r"\u7b2c") + str(page_index) + _u(r"\u9875\u7b2c") + str(buyer_index) + _u(r"\u5bb6\u4e70\u5bb6\u7f3a\u5c11\u4f01\u4e1a\u540d\u79f0\u3002"))

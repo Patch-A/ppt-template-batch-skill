@@ -805,6 +805,49 @@ class PresetContractTests(unittest.TestCase):
             self.assertEqual(explicit_result.slides[0].shapes[2].text, "采购品类：Embedded product")
             self.assertEqual(explicit_result.slides[0].shapes[3].text, "stale 4")
 
+    def test_console_briefing_export_allows_fewer_than_six_buyers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state = self.control_console.ConsoleState(root / "projects")
+            project = state.create_project("briefing", "buyer_briefing")
+            paths = state.require(project["slug"])
+            self.control_console.write_json(paths["records"], {
+                "pages": [{
+                    "title": "Briefing",
+                    "buyers": [{"name": f"Buyer {index}"} for index in range(5)],
+                }],
+            })
+            job = {
+                "output": str(root / "finished.pptx"),
+                "report": str(root / "report.json"),
+            }
+
+            command = state._briefing_export_command(job, paths, root / "run")
+
+            self.assertEqual(command[0], sys.executable)
+            self.assertIn("fill_buyer_briefing_pages.py", command[1])
+
+    def test_console_briefing_export_rejects_empty_or_over_capacity_pages(self):
+        for buyer_count in (0, 7):
+            with self.subTest(buyer_count=buyer_count), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                state = self.control_console.ConsoleState(root / "projects")
+                project = state.create_project("briefing", "buyer_briefing")
+                paths = state.require(project["slug"])
+                self.control_console.write_json(paths["records"], {
+                    "pages": [{
+                        "title": "Briefing",
+                        "buyers": [{"name": f"Buyer {index}"} for index in range(buyer_count)],
+                    }],
+                })
+                job = {
+                    "output": str(root / "finished.pptx"),
+                    "report": str(root / "report.json"),
+                }
+
+                with self.assertRaisesRegex(ValueError, "1-6"):
+                    state._briefing_export_command(job, paths, root / "run")
+
     def test_yitu_missing_shape_fails_without_writing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
