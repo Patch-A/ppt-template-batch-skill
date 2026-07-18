@@ -2,6 +2,7 @@ import json
 import importlib
 import importlib.util
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -1005,6 +1006,72 @@ class PresetContractTests(unittest.TestCase):
             with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
                 with self.assertRaisesRegex(ValueError, "Unsupported package paths"):
                     self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_rejects_source_path_resolving_outside_package_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            references = package_root / "references"
+            references.mkdir(parents=True)
+            (package_root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+            (references / "agent-runtime.md").write_text("runtime\n", encoding="utf-8")
+            (references / "input-schema.json").write_text("{}\n", encoding="utf-8")
+            escaped = Path(temp_dir) / "outside.md"
+            escaped.write_text("outside\n", encoding="utf-8")
+
+            with patch.object(Path, "rglob", return_value=[escaped]):
+                with self.assertRaisesRegex(ValueError, "escapes package root"):
+                    self.build_feishu_agent_skill.validate_package(package_root)
+
+    def test_feishu_builder_rejects_root_and_reference_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            references = package_root / "references"
+            references.mkdir(parents=True)
+            (package_root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+            (references / "agent-runtime.md").write_text("runtime\n", encoding="utf-8")
+            (references / "input-schema.json").write_text("{}\n", encoding="utf-8")
+            outside = Path(temp_dir) / "outside.md"
+            outside.write_text("outside\n", encoding="utf-8")
+
+            try:
+                os.symlink(outside, package_root / "root-link.md")
+                os.symlink(outside, references / "reference-link.md")
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with patch.object(self.build_feishu_agent_skill, "PACKAGE_ROOT", package_root):
+                with self.assertRaisesRegex(ValueError, "Symlinks are not allowed"):
+                    self.build_feishu_agent_skill.build(Path(temp_dir) / "skill.zip")
+
+    def test_feishu_builder_uses_same_directory_atomic_replace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "skill.zip"
+            with patch.object(self.build_feishu_agent_skill, "os", os, create=True):
+                with patch.object(os, "replace", wraps=os.replace) as replace:
+                    self.build_feishu_agent_skill.build(output)
+
+            replace.assert_called_once()
+            temporary_path, replaced_path = replace.call_args.args
+            self.assertEqual(Path(replaced_path), output.resolve())
+            self.assertEqual(Path(temporary_path).parent, output.parent.resolve())
+            self.assertFalse(Path(temporary_path).exists())
+
+    def test_feishu_builder_preserves_existing_output_when_zip_validation_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "skill.zip"
+            original = b"keep this output"
+            output.write_bytes(original)
+
+            with patch.object(
+                self.build_feishu_agent_skill.zipfile.ZipFile,
+                "testzip",
+                side_effect=RuntimeError("zip validation failed"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "zip validation failed"):
+                    self.build_feishu_agent_skill.build(output)
+
+            self.assertEqual(output.read_bytes(), original)
+            self.assertEqual(list(Path(temp_dir).glob(".skill.zip.*.tmp")), [])
 
     def test_feishu_contract_documents_stable_metadata(self):
         skill_text = (REPO_ROOT / "feishu-agent-skill" / "SKILL.md").read_text(encoding="utf-8")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import tempfile
 import zipfile
@@ -17,15 +18,26 @@ REQUIRED_FILES = (
 
 
 def validate_package(source: Path) -> list[Path]:
-    missing = [relative.as_posix() for relative in REQUIRED_FILES if not (source / relative).is_file()]
+    if source.is_symlink():
+        raise ValueError(f"Symlink package roots are not allowed: {source}")
+    package_root = source.resolve()
+    missing = [relative.as_posix() for relative in REQUIRED_FILES if not (package_root / relative).is_file()]
     if missing:
         raise ValueError(f"Missing required package files: {', '.join(missing)}")
 
-    entries = sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix())
+    entries = sorted(package_root.rglob("*"), key=lambda item: item.as_posix())
     unsupported: list[str] = []
     files: list[Path] = []
     for item in entries:
-        relative = item.relative_to(source)
+        if item.is_symlink():
+            raise ValueError(f"Symlinks are not allowed in package: {item}")
+        resolved = item.resolve()
+        try:
+            resolved.relative_to(package_root)
+        except ValueError as exc:
+            raise ValueError(f"Package path escapes package root: {item}") from exc
+
+        relative = item.relative_to(package_root)
         is_reference_path = relative.parts and relative.parts[0] == "references"
         is_allowed = relative == Path("SKILL.md") or is_reference_path
         if not is_allowed:
@@ -54,15 +66,32 @@ def build(output: Path) -> Path:
         raise FileNotFoundError("feishu-agent-skill directory is missing.")
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="ppt-agent-skill-") as temp_dir:
-        staging = Path(temp_dir) / "ppt-template-batch-agent-skill"
-        staging.mkdir()
-        package_files = copy_filtered(PACKAGE_ROOT, staging)
-        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-            for item in staging.rglob("*"):
-                if item.is_file():
-                    archive.write(item, item.relative_to(staging).as_posix())
-        print(f"Packaged {package_files} Aily-compatible files: {output}")
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=str(output.parent)
+    )
+    os.close(fd)
+    temporary_output = Path(temporary_name)
+    try:
+        with tempfile.TemporaryDirectory(prefix="ppt-agent-skill-") as temp_dir:
+            staging = Path(temp_dir) / "ppt-template-batch-agent-skill"
+            staging.mkdir()
+            package_files = copy_filtered(PACKAGE_ROOT, staging)
+            with zipfile.ZipFile(temporary_output, "w", zipfile.ZIP_DEFLATED) as archive:
+                for item in staging.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, item.relative_to(staging).as_posix())
+            with zipfile.ZipFile(temporary_output, "r") as archive:
+                invalid_member = archive.testzip()
+                if invalid_member is not None:
+                    raise ValueError(f"ZIP validation failed: {invalid_member}")
+        os.replace(temporary_output, output)
+    except Exception:
+        try:
+            temporary_output.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    print(f"Packaged {package_files} Aily-compatible files: {output}")
     return output
 
 
