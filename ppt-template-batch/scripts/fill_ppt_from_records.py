@@ -178,7 +178,16 @@ def _matches_stable_selector(shape, stable_selector: dict[str, Any]) -> bool:
         "picture": "image",
         "pic": "image",
     }
-    return actual == aliases.get(expected, expected)
+    normalized_expected = aliases.get(expected, expected)
+    accepted_roles = {
+        "text": {"text", "placeholder"},
+        "image": {"image"},
+        "table": {"table"},
+        "group": {"group"},
+        "placeholder": {"placeholder"},
+        "shape": {"shape"},
+    }
+    return actual in accepted_roles.get(normalized_expected, {normalized_expected})
 
 
 def get_shape(slide, selector: dict[str, Any]):
@@ -405,6 +414,11 @@ def replace_placeholders(slide, placeholders: dict[str, Any], context: dict[str,
 
 def remove_shape(shape) -> None:
     shape.element.getparent().remove(shape.element)
+
+
+def clear_slide(slide) -> None:
+    for shape in list(slide.shapes):
+        remove_shape(shape)
 
 
 def length_to_emu(value: Any, unit: str) -> int:
@@ -752,8 +766,9 @@ def fill_presentation(
         if "record_index" in slide_mapping:
             original_record_index = int(slide_mapping["record_index"])
             if not strict and original_record_index in failed_indexes:
+                clear_slide(presentation.slides[slide_index])
                 report["warnings"].append(
-                    f"Skipped slide mapping for failed record {original_record_index}."
+                    f"Cleared slide {slide_index + 1} for failed record {original_record_index}."
                 )
                 continue
             record = records[original_record_index - 1]

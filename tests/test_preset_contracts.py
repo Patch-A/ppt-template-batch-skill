@@ -124,6 +124,59 @@ class PresetContractTests(unittest.TestCase):
             self.assertEqual(result.slides[0].shapes[0].text, "wrong target")
             self.assertEqual(result.slides[0].shapes[1].text, "Resolved title")
 
+    def test_selector_role_text_matches_real_placeholder_shape(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template = root / "template.pptx"
+            records = root / "records.json"
+            config = root / "layout-config.json"
+            output = root / "output.pptx"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+            numeric_target = slide.placeholders[0]
+            numeric_target.name = "Numeric fallback"
+            numeric_target.text = "wrong target"
+            placeholder_target = slide.placeholders[1]
+            placeholder_target.name = "Real content placeholder"
+            placeholder_target.text = "template content"
+            presentation.save(template)
+
+            records.write_text(json.dumps({"records": [{"name": "Resolved placeholder"}]}), encoding="utf-8")
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "required_fields": ["name"],
+                        "slides": [
+                            {
+                                "slide_index": 1,
+                                "record_index": 1,
+                                "texts": [
+                                    {
+                                        "selector": {
+                                            "name": "Real content placeholder",
+                                            "role": "text",
+                                        },
+                                        "shape_index": 1,
+                                        "field": "name",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.fill_ppt_from_records.fill_presentation(
+                template, records, config, output, root / "workspace"
+            )
+
+            result = Presentation(output)
+            self.assertEqual(result.slides[0].shapes[0].text, "wrong target")
+            self.assertEqual(result.slides[0].shapes[1].text, "Resolved placeholder")
+
     def test_generated_layout_config_uses_schema_v2_and_stable_selectors(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -258,6 +311,46 @@ class PresetContractTests(unittest.TestCase):
             result = Presentation(output)
             self.assertEqual(len(result.slides), 1)
             self.assertEqual(result.slides[0].shapes[0].text, "Good")
+
+    def test_non_strict_failed_slide_is_cleared_instead_of_preserving_template_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template = root / "template.pptx"
+            records = root / "records.json"
+            config = root / "layout-config.json"
+            output = root / "output.pptx"
+
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            stale_shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+            stale_shape.name = "Failed record content"
+            stale_shape.text = "OLD TEMPLATE CONTENT"
+            presentation.save(template)
+            records.write_text(json.dumps({"records": [{"name": "Good"}, {}]}), encoding="utf-8")
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "required_fields": ["name"],
+                        "slides": [
+                            {
+                                "slide_index": 1,
+                                "record_index": 2,
+                                "texts": [{"shape_index": 1, "field": "name"}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = self.fill_ppt_from_records.fill_presentation(
+                template, records, config, output, root / "workspace"
+            )
+
+            self.assertEqual(report["failed_records"], [{"record_index": 2, "missing_required_fields": ["name"]}])
+            result = Presentation(output)
+            self.assertFalse(any("OLD TEMPLATE CONTENT" in shape.text for shape in result.slides[0].shapes if getattr(shape, "has_text_frame", False)))
 
     def test_non_strict_pipeline_preserves_failed_record_details_and_continues(self):
         with tempfile.TemporaryDirectory() as temp_dir:
