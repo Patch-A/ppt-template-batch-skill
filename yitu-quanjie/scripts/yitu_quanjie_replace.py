@@ -133,6 +133,17 @@ def _shape_map(slide: Any) -> dict[str, Any]:
     return shapes
 
 
+def _table_shapes(slide: Any) -> list[Any]:
+    tables: list[Any] = []
+
+    def collect(shape: Any) -> None:
+        if getattr(shape, "has_table", False):
+            tables.append(shape)
+
+    walk_shapes(slide.shapes, collect)
+    return tables
+
+
 def _parse_cell_key(key: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"cell_(\d+)(?:_(\d+))?", key)
     if not match:
@@ -225,11 +236,8 @@ def validate_replacement(
                 "capacity": capacity,
             })
 
-    tables = []
-    def collect_table(shape: Any) -> None:
-        if getattr(shape, "has_table", False):
-            tables.append(shape)
-    walk_shapes(slide.shapes, collect_table)
+    tables = _table_shapes(slide)
+    target_table = tables[0] if table_data and tables else None
 
     replacement_cells: dict[tuple[int, int], str] = {}
     if table_data:
@@ -238,11 +246,11 @@ def validate_replacement(
             if coordinate is None:
                 report["table_errors"].append({"key": key, "error": "Invalid table coordinate"})
                 continue
-            if not tables:
+            if target_table is None:
                 report["table_errors"].append({"key": key, "error": "No table on the first slide"})
                 continue
             row_index, col_index = coordinate
-            table = tables[0].table
+            table = target_table.table
             if row_index >= len(table.rows) or col_index >= len(table.columns):
                 report["table_errors"].append({
                     "key": key,
@@ -262,7 +270,8 @@ def validate_replacement(
                     "capacity": capacity,
                 })
 
-    for table_index, table_shape in enumerate(tables):
+    target_tables = [target_table] if target_table is not None else []
+    for table_index, table_shape in enumerate(target_tables):
         table = table_shape.table
         required_height = 0
         for row_index, row in enumerate(table.rows):
@@ -315,9 +324,14 @@ def run_replacement(
             raise KeyError(f"Mapped shapes were not found on the first slide: {missing}")
         if report["overflows"]:
             overflow = report["overflows"][0]
+            if "length" in overflow and "capacity" in overflow:
+                raise ValueError(
+                    f"Replacement for {overflow['target']!r} is too long: "
+                    f"{overflow['length']} characters vs {overflow['capacity']} capacity"
+                )
             raise ValueError(
-                f"Replacement for {overflow['target']!r} is too long: "
-                f"{overflow['length']} characters vs {overflow['capacity']} capacity"
+                f"Yitu replacement overflow for {overflow['target']!r}: "
+                f"required {overflow.get('required_height')} vs capacity {overflow.get('capacity')}"
             )
         raise ValueError("Yitu replacement validation failed: " + "; ".join(report["errors"]))
 
@@ -325,6 +339,8 @@ def run_replacement(
     if not prs.slides:
         raise ValueError("The template has no slides")
     slide = prs.slides[0]
+    target_tables = _table_shapes(slide)
+    target_table = target_tables[0] if table_data and target_tables else None
 
     def process(shape: Any) -> None:
         name = getattr(shape, "name", "")
@@ -335,25 +351,25 @@ def run_replacement(
             else:
                 replace_text(shape, new_text)
 
-        if table_data and getattr(shape, "has_table", False):
-            table = shape.table
-            for key, new_text in table_data.items():
-                coordinate = _parse_cell_key(str(key))
-                if coordinate is None:
-                    continue
-                row_index, col_index = coordinate
-                if row_index < len(table.rows) and col_index < len(table.columns):
-                    replace_cell(table.cell(row_index, col_index), new_text)
-            for row in table.rows:
-                row_values = [cell.text for cell in row.cells]
-                value = "\n".join(item for item in row_values if item)
-                width = sum(int(column.width) for column in table.columns)
-                row.height = max(
-                    MIN_TABLE_ROW_HEIGHT,
-                    _content_row_height(row.cells[0], width, value),
-                )
-
     walk_shapes(slide.shapes, process)
+
+    if target_table is not None:
+        table = target_table.table
+        for key, new_text in table_data.items():
+            coordinate = _parse_cell_key(str(key))
+            if coordinate is None:
+                continue
+            row_index, col_index = coordinate
+            if row_index < len(table.rows) and col_index < len(table.columns):
+                replace_cell(table.cell(row_index, col_index), new_text)
+        for row in table.rows:
+            row_values = [cell.text for cell in row.cells]
+            value = "\n".join(item for item in row_values if item)
+            width = sum(int(column.width) for column in table.columns)
+            row.height = max(
+                MIN_TABLE_ROW_HEIGHT,
+                _content_row_height(row.cells[0], width, value),
+            )
 
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)

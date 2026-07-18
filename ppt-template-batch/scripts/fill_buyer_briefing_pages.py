@@ -211,7 +211,10 @@ def fill_slide(
         "overlong_text": [],
     }
 
-    for slot_index, slot in enumerate(slots[:buyers_per_slide]):
+    for slot_index, slot in enumerate(slots):
+        if slot_index >= buyers_per_slide:
+            clear_slot(slide, slot)
+            continue
         buyer = buyers[slot_index] if slot_index < len(buyers) else {}
         if not str(buyer.get("name", "") or "").strip():
             clear_slot(slide, slot)

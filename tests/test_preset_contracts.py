@@ -12,7 +12,7 @@ from argparse import Namespace
 from unittest.mock import patch
 
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -674,6 +674,53 @@ class PresetContractTests(unittest.TestCase):
                 mapping,
             )
 
+    def test_buyer_briefing_clears_all_mapped_slots_beyond_configured_capacity(self):
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        mapping = {"title_shape": 1, "buyers_per_slide": 4, "slots": []}
+        slot_styles = []
+        for index in range(6):
+            summary = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.4))
+            summary.text = f"stale summary {index}"
+            summary_run = summary.text_frame.paragraphs[0].runs[0]
+            summary_run.font.bold = True
+            summary_run.font.size = Pt(11)
+            products = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+            products.text = f"stale products {index}"
+            slot_styles.append((summary_run.font.bold, summary_run.font.size.pt))
+            mapping["slots"].append({
+                "summary_shape": len(slide.shapes) - 1,
+                "products_shape": len(slide.shapes),
+            })
+        title = slide.shapes.add_textbox(0, 0, Inches(2), Inches(0.3))
+        mapping["title_shape"] = len(slide.shapes)
+
+        self.fill_buyer_briefing_pages.fill_slide(
+            slide,
+            {
+                "title": "Category",
+                "buyers": [{
+                    "name": "Buyer",
+                    "summary": "Buyer summary",
+                    "products": "Product",
+                }],
+            },
+            mapping,
+        )
+
+        for index, slot in enumerate(mapping["slots"]):
+            summary_shape = slide.shapes[slot["summary_shape"] - 1]
+            products_shape = slide.shapes[slot["products_shape"] - 1]
+            if index == 0:
+                self.assertEqual(summary_shape.text, "Buyer summary")
+                self.assertEqual(products_shape.text, "采购品类：Product")
+            else:
+                self.assertEqual(summary_shape.text, "")
+                self.assertEqual(products_shape.text, "")
+                summary_run = summary_shape.text_frame.paragraphs[0].runs[0]
+                self.assertEqual(summary_run.font.bold, slot_styles[index][0])
+                self.assertEqual(summary_run.font.size.pt, slot_styles[index][1])
+
     def test_yitu_missing_shape_fails_without_writing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -741,6 +788,67 @@ class PresetContractTests(unittest.TestCase):
             self.assertGreaterEqual(len(report["table_errors"]), 2)
             self.assertTrue(report["output"]["errors"])
             self.assertFalse((root / "output.pptx").exists())
+
+    def test_yitu_replaces_only_the_table_validated_by_table_data(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            first_table = slide.shapes.add_table(1, 1, 0, 0, Inches(2), Inches(1))
+            second_table = slide.shapes.add_table(1, 1, Inches(3), 0, Inches(2), Inches(1))
+            first_table.table.cell(0, 0).text = "first table"
+            second_table.table.cell(0, 0).text = "second table"
+            presentation.save(template_path)
+
+            self.yitu_quanjie_replace.run_replacement(
+                template_path,
+                output_path,
+                {},
+                {"cell_00": "updated"},
+            )
+
+            result = Presentation(output_path)
+            self.assertEqual(result.slides[0].shapes[0].table.cell(0, 0).text, "updated")
+            self.assertEqual(result.slides[0].shapes[1].table.cell(0, 0).text, "second table")
+
+    def test_yitu_table_height_overflow_raises_stable_error_without_length_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            table_shape = slide.shapes.add_table(1, 1, 0, 0, Inches(1), Inches(0.05))
+            table_shape.table.cell(0, 0).text = "template cell text with enough capacity"
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {},
+                {"cell_00": "short"},
+            )
+            height_overflows = [
+                item for item in report["overflows"] if item["kind"] == "table_height"
+            ]
+            self.assertTrue(height_overflows)
+            self.assertNotIn("length", height_overflows[0])
+
+            try:
+                self.yitu_quanjie_replace.run_replacement(
+                    template_path,
+                    output_path,
+                    {},
+                    {"cell_00": "short"},
+                )
+            except Exception as exc:
+                self.assertIsInstance(exc, ValueError)
+                self.assertIn("table_0", str(exc))
+            else:
+                self.fail("Expected a stable ValueError for table height overflow")
+            self.assertFalse(output_path.exists())
 
     def test_yitu_dry_run_prints_json_and_does_not_save(self):
         with tempfile.TemporaryDirectory() as temp_dir:

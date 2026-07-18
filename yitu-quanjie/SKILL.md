@@ -281,7 +281,7 @@ def run_replacement(input_path, output_path, content_map, table_data=None):
 
 ## Replacement validation contract
 
-`validate_replacement(input_path, output_path, content_map, table_data=None)` loads the first slide and returns a JSON-serializable report without saving. The report validates mapped shape names, text capacity, table coordinates (`cell_00`, `cell_01`, `cell_10`, `cell_11`, or `cell_<row>_<col>`), and the output path. Missing shapes, invalid cells, and overflows are reported under stable fields and make `ok` false.
+`validate_replacement(input_path, output_path, content_map, table_data=None)` loads the first slide and returns a JSON-serializable report without saving. The report validates mapped shape names, text capacity, table coordinates (`cell_00`, `cell_01`, `cell_10`, `cell_11`, or `cell_<row>_<col>`), and the output path. `table_data` targets the first recursively discovered table only; `run_replacement(...)` uses that same table object and never applies the mapping to every table on the slide. Missing shapes, invalid cells, and overflows are reported under stable fields and make `ok` false.
 
 `run_replacement(...)` keeps the existing Python and CLI entry point. It runs validation before any mutation or save, then preserves existing runs and recursively processes groups. Table rows use a minimum height of 0.25 inches and content-based sizing; the implementation never uses `Emu(0)`.
 

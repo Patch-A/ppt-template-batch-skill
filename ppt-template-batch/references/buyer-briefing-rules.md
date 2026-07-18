@@ -53,6 +53,6 @@ The local control console has a dedicated Buyer Briefing Form. Do not force user
 ## Export contract
 
 - A page with more than 6 buyers is rejected before the PPTX is saved.
-- A page with fewer than 6 buyers is valid. Every unused summary and product slot is cleared by setting the existing runs to empty text, so stale template content cannot remain.
+- A page with fewer than 6 buyers is valid. Every unused summary and product slot in the mapping is cleared, including slots beyond a configured `buyers_per_slide` capacity, by setting the existing runs to empty text, so stale template content cannot remain.
 - Export reports use `missing_buyers` entries with `page` and `slot`, and `overlong_text` entries with `page`, `slot`, `field`, `length`, and estimated `capacity`.
 - Text capacity warnings do not rebuild the text frame or replace its run styles. They are reported for review while the export retains the existing CLI behavior.
