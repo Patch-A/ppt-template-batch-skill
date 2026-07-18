@@ -356,6 +356,35 @@ class PresetContractTests(unittest.TestCase):
             self.assertEqual(result.get("error_type"), "InvalidSelectorError")
             self.assertEqual(result.get("error"), "invalid selector: Missing title")
 
+    def test_pipeline_does_not_swallow_runner_failure_after_successful_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "fill-report.json"
+            job = {
+                "template": str(root / "template.pptx"),
+                "records": str(root / "records.json"),
+                "layout_config": str(root / "layout-config.json"),
+                "output": str(root / "output.pptx"),
+                "report": str(report_path),
+            }
+            defaults = Namespace(
+                template=None,
+                records=None,
+                layout_config=None,
+                output=None,
+                output_dir=None,
+                workspace=None,
+                strict=False,
+            )
+
+            def write_successful_report(_cmd):
+                report_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+                raise RuntimeError("simulated filler failure")
+
+            with patch.object(self.run_ppt_batch_pipeline, "run", side_effect=write_successful_report):
+                with self.assertRaisesRegex(RuntimeError, "simulated filler failure"):
+                    self.run_ppt_batch_pipeline.run_single_job(job, defaults, 1)
+
     def test_pipeline_accepts_successful_filler_report_without_error_details(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

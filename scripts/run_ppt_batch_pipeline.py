@@ -103,6 +103,9 @@ def run_single_job(job: dict[str, Any], default_args: argparse.Namespace, index:
         # continue and callers can see the failed records.
         if report_signature(report_path) in (None, previous_report_signature):
             raise
+        report = load_json(report_path)
+        if report.get("ok", True):
+            raise
     current_report_signature = report_signature(report_path)
     if current_report_signature is None:
         raise RuntimeError(f"Filler completed without writing a report: {report_path}")
