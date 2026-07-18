@@ -112,6 +112,8 @@ def run_single_job(job: dict[str, Any], default_args: argparse.Namespace, index:
     return {
         "index": index,
         "ok": bool(report.get("ok", True)),
+        "error_type": report.get("error_type"),
+        "error": report.get("error"),
         "schema_version": report.get("schema_version"),
         "template": str(template),
         "records": str(records),

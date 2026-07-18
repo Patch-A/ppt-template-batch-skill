@@ -315,6 +315,79 @@ class PresetContractTests(unittest.TestCase):
                 {"ok": True, "record_count": 999},
             )
 
+    def test_pipeline_preserves_error_details_from_failed_filler_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "fill-report.json"
+            job = {
+                "template": str(root / "template.pptx"),
+                "records": str(root / "records.json"),
+                "layout_config": str(root / "layout-config.json"),
+                "output": str(root / "output.pptx"),
+                "report": str(report_path),
+            }
+            defaults = Namespace(
+                template=None,
+                records=None,
+                layout_config=None,
+                output=None,
+                output_dir=None,
+                workspace=None,
+                strict=False,
+            )
+
+            def write_failed_report(_cmd):
+                report_path.write_text(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error_type": "InvalidSelectorError",
+                            "error": "invalid selector: Missing title",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                raise RuntimeError("filler command failed")
+
+            with patch.object(self.run_ppt_batch_pipeline, "run", side_effect=write_failed_report):
+                result = self.run_ppt_batch_pipeline.run_single_job(job, defaults, 1)
+
+            self.assertIs(result["ok"], False)
+            self.assertEqual(result.get("error_type"), "InvalidSelectorError")
+            self.assertEqual(result.get("error"), "invalid selector: Missing title")
+
+    def test_pipeline_accepts_successful_filler_report_without_error_details(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "fill-report.json"
+            job = {
+                "template": str(root / "template.pptx"),
+                "records": str(root / "records.json"),
+                "layout_config": str(root / "layout-config.json"),
+                "output": str(root / "output.pptx"),
+                "report": str(report_path),
+            }
+            defaults = Namespace(
+                template=None,
+                records=None,
+                layout_config=None,
+                output=None,
+                output_dir=None,
+                workspace=None,
+                strict=False,
+            )
+
+            def write_success_report(_cmd):
+                report_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+                return "", ""
+
+            with patch.object(self.run_ppt_batch_pipeline, "run", side_effect=write_success_report):
+                result = self.run_ppt_batch_pipeline.run_single_job(job, defaults, 1)
+
+            self.assertIs(result["ok"], True)
+            self.assertIsNone(result.get("error_type"))
+            self.assertIsNone(result.get("error"))
+
     def test_non_strict_repeat_skips_failed_records_and_reports_them(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
