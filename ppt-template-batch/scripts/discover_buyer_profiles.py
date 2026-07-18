@@ -283,11 +283,11 @@ def refine_buyer_products(value: str, procurement_need: str, context: str = "") 
     product = normalize_products(value, procurement_need)
     requested = split_product_items(procurement_need)
     returned = split_product_items(product)
-    matches_global_request = bool(requested) and len(returned) == len(requested) and set(returned) == set(requested)
-    if matches_global_request:
+    copies_global_request = bool(returned) and bool(requested) and set(returned).issubset(set(requested))
+    if copies_global_request:
         evidence = re.sub(r"\s+", "", context or "")
         ranked = sorted(
-            ((item, evidence.count(item)) for item in requested),
+            ((item, evidence.count(item)) for item in returned),
             key=lambda pair: pair[1],
             reverse=True,
         )

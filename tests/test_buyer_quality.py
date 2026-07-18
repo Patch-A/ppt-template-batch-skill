@@ -42,6 +42,24 @@ class BuyerQualityRegressionTests(unittest.TestCase):
 
         self.assertEqual(result, "需核实具体设备")
 
+    def test_refine_buyer_products_rejects_unverified_subset_of_global_request(self):
+        result = refine_buyer_products(
+            "电机、减速机",
+            "电机、减速机、水泵",
+            "企业介绍未列出具体设备",
+        )
+
+        self.assertEqual(result, "需核实具体设备")
+
+    def test_refine_buyer_products_filters_unverified_subset_to_evidence(self):
+        result = refine_buyer_products(
+            "电机、减速机",
+            "电机、减速机、水泵",
+            "输送线仅确认使用电机。",
+        )
+
+        self.assertEqual(result, "电机")
+
     def test_cli_and_console_keep_unverified_product_warnings(self):
         buyer = {
             "name": "示例买家",
