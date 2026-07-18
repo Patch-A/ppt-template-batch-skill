@@ -892,6 +892,57 @@ class PresetContractTests(unittest.TestCase):
             self.assertTrue(report["output"]["path"].endswith("output.pptx"))
             self.assertFalse(output_path.exists())
 
+    def test_yitu_text_capacity_reports_same_length_chinese_overflow_in_narrow_large_font_box(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(0.4), Inches(0.3))
+            shape.name = "Narrow Shape"
+            original_text = "模板文字" * 5
+            shape.text = original_text
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(24)
+            presentation.save(template_path)
+
+            replacement = "替换文字" * 5
+            self.assertEqual(len(replacement), len(original_text))
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {"Narrow Shape": replacement},
+            )
+
+            self.assertTrue(
+                any(
+                    item["target"] == "Narrow Shape" and item["kind"] == "shape"
+                    for item in report["overflows"]
+                )
+            )
+
+    def test_yitu_text_capacity_does_not_flag_reasonable_text_in_wide_box(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            shape = slide.shapes.add_textbox(0, 0, Inches(4), Inches(1))
+            shape.name = "Wide Shape"
+            shape.text = "x"
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {"Wide Shape": "这是一段可以放入宽文本框的合理中文文本"},
+            )
+
+            self.assertTrue(report["ok"])
+            self.assertFalse(any(item["target"] == "Wide Shape" for item in report["overflows"]))
+
     def test_yitu_validate_reports_invalid_table_coordinate_and_output_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -939,6 +990,34 @@ class PresetContractTests(unittest.TestCase):
             result = Presentation(output_path)
             self.assertEqual(result.slides[0].shapes[0].table.cell(0, 0).text, "updated")
             self.assertEqual(result.slides[0].shapes[1].table.cell(0, 0).text, "second table")
+
+    def test_yitu_table_height_uses_each_column_width_for_narrow_long_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template_path = root / "template.pptx"
+            output_path = root / "output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            table_shape = slide.shapes.add_table(1, 2, 0, 0, Inches(3), Inches(0.9))
+            table_shape.table.columns[0].width = Inches(2.5)
+            table_shape.table.columns[1].width = Inches(0.5)
+            table_shape.table.cell(0, 0).text = "wide label"
+            table_shape.table.cell(0, 1).text = ""
+            presentation.save(template_path)
+
+            report = self.yitu_quanjie_replace.validate_replacement(
+                template_path,
+                output_path,
+                {},
+                {"cell_01": "窄列长文本" * 6},
+            )
+
+            self.assertTrue(
+                any(
+                    item["kind"] == "table_height" and item["target"] == "table_0"
+                    for item in report["overflows"]
+                )
+            )
 
     def test_yitu_table_height_overflow_raises_stable_error_without_length_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:

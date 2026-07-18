@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,28 +65,31 @@ def walk_shapes(shapes: Any, callback: Callable[[Any], None]) -> None:
             walk_shapes(shape.shapes, callback)
 
 
-def text_capacity(shape: Any) -> int | None:
+def _legacy_text_capacity(shape: Any) -> float | None:
     original_len = len(getattr(shape, "text", ""))
     if not original_len:
         return None
-    return max(original_len, int(original_len * 1.05))
+    return float(max(original_len, int(original_len * 1.05)))
 
 
 def check_length(shape: Any, new_text: str) -> None:
     capacity = text_capacity(shape)
-    if capacity is not None and len(new_text) > capacity:
+    required = _weighted_text_length(new_text)
+    if capacity is not None and required > capacity:
         raise ValueError(
             f"Replacement for {getattr(shape, 'name', '<unknown>')!r} is too long: "
-            f"{len(new_text)} characters vs {capacity} capacity"
+            f"{len(new_text)} characters ({required:.1f} width units) vs "
+            f"{capacity:.1f} capacity"
         )
 
 
 def _font_size_pt(text_frame: Any, default: float = 14.0) -> float:
+    sizes = []
     for paragraph in text_frame.paragraphs:
         for run in paragraph.runs:
             if run.font.size is not None:
-                return float(run.font.size.pt)
-    return default
+                sizes.append(float(run.font.size.pt))
+    return max(sizes, default=default)
 
 
 def _weighted_text_length(value: str) -> float:
@@ -92,7 +97,7 @@ def _weighted_text_length(value: str) -> float:
     for char in value:
         if char == "\n":
             continue
-        if "\u4e00" <= char <= "\u9fff":
+        if unicodedata.east_asian_width(char) in {"W", "F"}:
             total += 1.0
         elif char.isspace():
             total += 0.3
@@ -101,24 +106,87 @@ def _weighted_text_length(value: str) -> float:
     return total
 
 
-def _content_row_height(cell: Any, column_width: int, value: str) -> int:
-    font_size = max(_font_size_pt(cell.text_frame), 1.0)
-    usable_width = max(
-        column_width - int(cell.margin_left or 0) - int(cell.margin_right or 0),
-        int(Inches(0.5)),
+def _text_metrics(
+    text_frame: Any,
+    value: str,
+    width: int | None,
+    height: int | None = None,
+) -> dict[str, float] | None:
+    if not width or not height:
+        return None
+
+    font_size = max(_font_size_pt(text_frame), 1.0)
+    horizontal_margin = int(text_frame.margin_left or 0) + int(text_frame.margin_right or 0)
+    vertical_margin = int(text_frame.margin_top or 0) + int(text_frame.margin_bottom or 0)
+    usable_width = max(int(width) - horizontal_margin, int(Inches(0.1)))
+    usable_height = max(int(height) - vertical_margin, int(Inches(0.1)))
+    line_width_units = max(
+        1.0,
+        usable_width / EMU_PER_INCH * 72.0 / (font_size * 0.95),
     )
-    chars_per_line = max(8.0, usable_width / EMU_PER_INCH * 72.0 / (font_size * 0.95))
-    lines = max(
+    line_height_pt = font_size * 1.2
+    capacity_lines = max(
         1,
-        sum(
-            max(1, int((_weighted_text_length(line) + chars_per_line - 1) // chars_per_line))
-            for line in (str(value or "").splitlines() or [""])
-        ),
+        math.floor((usable_height / EMU_PER_INCH * 72.0) / line_height_pt),
     )
-    height_pt = lines * font_size * 1.25 + (
-        int(cell.margin_top or 0) + int(cell.margin_bottom or 0)
-    ) / 12700 + 2.0
+    required_lines = sum(
+        max(1, math.ceil(_weighted_text_length(line) / line_width_units))
+        for line in (str(value or "").splitlines() or [""])
+    )
+    return {
+        "font_size": font_size,
+        "line_width_units": line_width_units,
+        "capacity_lines": float(capacity_lines),
+        "required_lines": float(required_lines),
+        "capacity_units": line_width_units * capacity_lines,
+    }
+
+
+def text_capacity(
+    shape: Any,
+    width: int | None = None,
+    height: int | None = None,
+) -> float | None:
+    """Return physical text capacity; use legacy text length only without geometry."""
+    text_frame = getattr(shape, "text_frame", None)
+    if text_frame is None:
+        return _legacy_text_capacity(shape)
+    if width is None:
+        width = getattr(shape, "width", None)
+    if height is None:
+        height = getattr(shape, "height", None)
+    metrics = _text_metrics(text_frame, "", width, height)
+    if metrics is not None:
+        return metrics["capacity_units"]
+    return _legacy_text_capacity(shape)
+
+
+def _content_row_height(cell: Any, column_width: int, value: str) -> int:
+    text_frame = cell.text_frame
+    font_size = max(_font_size_pt(text_frame), 1.0)
+    horizontal_margin = int(text_frame.margin_left or 0) + int(text_frame.margin_right or 0)
+    vertical_margin = int(text_frame.margin_top or 0) + int(text_frame.margin_bottom or 0)
+    usable_width = max(int(column_width) - horizontal_margin, int(Inches(0.1)))
+    line_width_units = max(
+        1.0,
+        usable_width / EMU_PER_INCH * 72.0 / (font_size * 0.95),
+    )
+    lines = sum(
+        max(1, math.ceil(_weighted_text_length(line) / line_width_units))
+        for line in (str(value or "").splitlines() or [""])
+    )
+    height_pt = lines * font_size * 1.2 + vertical_margin / 12700
     return max(MIN_TABLE_ROW_HEIGHT, int(Inches(height_pt / 72.0)))
+
+
+def _row_height(table: Any, row_index: int, replacements: dict[tuple[int, int], str] | None = None) -> int:
+    replacements = replacements or {}
+    heights = []
+    for col_index, column in enumerate(table.columns):
+        cell = table.cell(row_index, col_index)
+        value = replacements.get((row_index, col_index), cell.text)
+        heights.append(_content_row_height(cell, int(column.width), value))
+    return max([MIN_TABLE_ROW_HEIGHT, *heights])
 
 
 def _shape_map(slide: Any) -> dict[str, Any]:
@@ -227,13 +295,18 @@ def validate_replacement(
         if not getattr(shape, "has_text_frame", False):
             report["shape_errors"].append({"shape": name, "error": "Shape has no text frame"})
             continue
+        metrics = _text_metrics(shape.text_frame, new_text, shape.width, shape.height)
         capacity = text_capacity(shape)
-        if capacity is not None and len(new_text) > capacity:
+        required = _weighted_text_length(new_text)
+        if capacity is not None and required > capacity:
             report["overflows"].append({
                 "target": name,
                 "kind": "shape",
                 "length": len(new_text),
+                "weighted_length": required,
                 "capacity": capacity,
+                "required_lines": metrics["required_lines"] if metrics else None,
+                "capacity_lines": metrics["capacity_lines"] if metrics else None,
             })
 
     tables = _table_shapes(slide)
@@ -261,13 +334,20 @@ def validate_replacement(
                 continue
             replacement_cells[(row_index, col_index)] = new_text
             cell = table.cell(row_index, col_index)
-            capacity = text_capacity(cell)
-            if capacity is not None and len(new_text) > capacity:
+            column_width = int(table.columns[col_index].width)
+            row_height = int(table.rows[row_index].height)
+            capacity = text_capacity(cell, column_width, row_height)
+            required = _weighted_text_length(new_text)
+            metrics = _text_metrics(cell.text_frame, new_text, column_width, row_height)
+            if capacity is not None and required > capacity:
                 report["overflows"].append({
                     "target": key,
                     "kind": "table_cell",
                     "length": len(new_text),
+                    "weighted_length": required,
                     "capacity": capacity,
+                    "required_lines": metrics["required_lines"] if metrics else None,
+                    "capacity_lines": metrics["capacity_lines"] if metrics else None,
                 })
 
     target_tables = [target_table] if target_table is not None else []
@@ -282,10 +362,11 @@ def validate_replacement(
                 )
                 for col_index in range(len(table.columns))
             ]
-            value = "\n".join(value for value in row_values if value)
-            width = sum(int(column.width) for column in table.columns)
-            row_height = _content_row_height(table.cell(row_index, 0), width, value)
-            required_height += row_height
+            replacements = {
+                (row_index, col_index): value
+                for col_index, value in enumerate(row_values)
+            }
+            required_height += _row_height(table, row_index, replacements)
         if required_height > int(table_shape.height):
             report["overflows"].append({
                 "target": f"table_{table_index}",
@@ -362,14 +443,8 @@ def run_replacement(
             row_index, col_index = coordinate
             if row_index < len(table.rows) and col_index < len(table.columns):
                 replace_cell(table.cell(row_index, col_index), new_text)
-        for row in table.rows:
-            row_values = [cell.text for cell in row.cells]
-            value = "\n".join(item for item in row_values if item)
-            width = sum(int(column.width) for column in table.columns)
-            row.height = max(
-                MIN_TABLE_ROW_HEIGHT,
-                _content_row_height(row.cells[0], width, value),
-            )
+        for row_index, row in enumerate(table.rows):
+            row.height = _row_height(table, row_index)
 
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
