@@ -283,26 +283,27 @@ def refine_buyer_products(value: str, procurement_need: str, context: str = "") 
     product = normalize_products(value, procurement_need)
     requested = split_product_items(procurement_need)
     returned = split_product_items(product)
-    copies_global_request = bool(returned) and bool(requested) and set(returned).issubset(set(requested))
-    if copies_global_request:
-        evidence = re.sub(r"\s+", "", context or "")
-        ranked = sorted(
-            ((item, evidence.count(item)) for item in returned),
-            key=lambda pair: pair[1],
-            reverse=True,
-        )
-        selected = [item for item, hits in ranked if hits > 0][:3]
-        return "\u3001".join(selected) if selected else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
-
     specific_returned = [item for item in returned if not is_generic_product(item)]
-    if specific_returned and len(specific_returned) != len(returned):
-        return "\u3001".join(specific_returned[:3])
     if not returned:
         inferred = infer_concrete_products(context)
         return "\u3001".join(inferred) if inferred else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
     if all(is_generic_product(item) for item in returned):
         inferred = infer_concrete_products(context)
         return "\u3001".join(inferred) if inferred else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
+
+    copies_global_request = bool(returned) and bool(requested) and set(returned).issubset(set(requested))
+    if copies_global_request:
+        evidence = re.sub(r"\s+", "", context or "")
+        ranked = sorted(
+            ((item, evidence.count(item)) for item in specific_returned),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        selected = [item for item, hits in ranked if hits > 0][:3]
+        return "\u3001".join(selected) if selected else "\u9700\u6838\u5b9e\u5177\u4f53\u8bbe\u5907"
+
+    if specific_returned and len(specific_returned) != len(returned):
+        return "\u3001".join(specific_returned[:3])
     if len(requested) <= 3 or not requested:
         return product
     return product

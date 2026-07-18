@@ -60,6 +60,15 @@ class BuyerQualityRegressionTests(unittest.TestCase):
 
         self.assertEqual(result, "电机")
 
+    def test_refine_buyer_products_rejects_generic_subset_even_when_context_repeats_it(self):
+        result = refine_buyer_products(
+            "商用厨房设备",
+            "商用厨房设备、切菜机",
+            "公司经营商用厨房设备。",
+        )
+
+        self.assertEqual(result, "需核实具体设备")
+
     def test_cli_and_console_keep_unverified_product_warnings(self):
         buyer = {
             "name": "示例买家",
