@@ -212,6 +212,16 @@ Buyer research stores qualification details alongside each buyer:
 - `confidence`
 - `risks`
 
+#### Auditable buyer acceptance
+
+For a requested target of `N` buyers, the workflow first discovers a broader public candidate pool, then applies the target country as a hard filter, matches the exact enterprise, and verifies a concrete use, procurement, import, distribution, project, maintenance, or resale scenario. When the user supplies an internal buyer source, candidates are cross-checked before entering the final `accepted` set; rejected, duplicated, weak-match, country-mismatched, and pending records cannot enter the PPT.
+
+If the accepted set is short, the workflow searches only for the missing number of new candidates and repeats verification until the target is met or the remaining gap is explicitly blocked. Internal identifiers, source details, and exclusion reasons stay in a separate verification table and never appear in customer-facing copy.
+
+When the template requires a Logo and a right-side visual, both are delivery requirements. Use a verified enterprise Logo and a separate product, facility, project, or application image. Replace candidates with incomplete assets when possible; otherwise report the block instead of fabricating a Logo or presenting an incomplete deck. The exported PPT is reopened and checked against the accepted set, country, text, forbidden internal terms, image count, geometry, row heights, and fixed elements.
+
+See the [redacted buyer-board optimization reference](feishu-agent-skill/references/buyer-board-optimization-20260724.md) for the full acceptance and delivery checklist.
+
 CLI research can also accept:
 
 ```bash
