@@ -245,6 +245,8 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
   Use only for compact buyer-briefing pages with one category and six buyer slots per slide.
 - `references/buyer-board-workflow-changelog.md`
   Use as a regression checklist when a buyer-board export shows stale template text, incorrect row heights, incomplete repeated pages, or unreliable Logo assets.
+- `references/buyer-board-optimization-20260724.md`
+  Use when buyer-board research must cross-check an internal buyer source, enforce country and exact-entity matching, keep internal verification separate, or recheck the final PPT against accepted records.
 - `scripts/generate_layout_config.py`
   Use when turning a reference PPT into a starter `layout-config.json`.
 - `scripts/fill_ppt_from_records.py`

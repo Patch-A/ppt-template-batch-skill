@@ -118,6 +118,8 @@ Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-age
 
 The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md`](feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md). It adds fixed-style protection for content titles and footer prompts, safe original-run replacement, explicit style-override opt-in, and model-selection guidance.
 
+The 2026-07-24 buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-optimization-20260724.md`](feishu-agent-skill/references/buyer-board-optimization-20260724.md). The public version is redacted and covers the auditable candidate loop, country and exact-enterprise matching, accepted-set generation, internal/customer data separation, asset completeness gates, and final PPT rechecks.
+
 ### 一图全解 preset
 
 Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.
