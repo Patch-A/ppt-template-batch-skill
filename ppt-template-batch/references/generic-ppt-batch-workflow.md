@@ -12,10 +12,13 @@ The reusable sequence is:
 2. Decompose slide structure, text boxes, tables, image placeholders, styling, and fixed content.
 3. Generate a machine-readable layout config.
 4. Define the input data schema for the template.
-5. Fill text while preserving template styles and run structure when possible.
-6. Replace images only inside approved image slots.
-7. Export one or many finished PPT files.
-8. Verify slide count, required fields, missing text, encoding, and obvious layout regressions.
+5. Prepare or polish approved prose fields while keeping factual and machine fields frozen.
+6. Fill text while preserving template styles and run structure when possible.
+7. Recover official website assets when needed and replace images only inside approved image slots.
+8. Export one or many finished PPT files.
+9. Verify slide count, required fields, missing text, encoding, assets, and obvious layout regressions.
+
+Read `cross-preset-capabilities.md` when generic records need human-writing copy work or Crawl4AI-assisted official website assets.
 
 ## Template decomposition checklist
 
