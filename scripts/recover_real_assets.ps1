@@ -5,7 +5,7 @@
     [string]$InputPpt,
     [string]$OutputPpt,
     [string]$PreviewDir,
-    [ValidateSet("light", "auto", "browser")][string]$AssetMode = "auto",
+    [ValidateSet("light", "auto", "browser", "crawl4ai")][string]$AssetMode = "auto",
     [int]$BrowserTimeoutMs = 18000,
     [switch]$EnableAiVisualFallback,
     [switch]$SkipPptRefresh

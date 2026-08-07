@@ -265,7 +265,7 @@ Install dependencies first:
 pip install -r requirements.txt
 ```
 
-Do not install Playwright or Chromium for buyer-board asset discovery. The browser path is disabled for network safety; use the controlled light fetcher and inspect `asset_fetch_report.json` when an asset is unavailable.
+Do not install Playwright or Chromium into the project for normal buyer-board asset discovery. The browser path is disabled for network safety; use the controlled light fetcher and inspect `asset_fetch_report.json` when an asset is unavailable. An optional `crawl4ai` recovery mode is available only through an explicitly configured local Crawl4AI service; see [`docs/crawl4ai-asset-recovery.md`](docs/crawl4ai-asset-recovery.md).
 
 Set API keys only when using buyer research or AI visual fallback. The control console stores keys only in the current local process and never writes them to project files.
 
@@ -308,13 +308,15 @@ Python requests now fall back to the system `curl` executable automatically when
 $env:BUYER_BOARD_DISABLE_CURL_FALLBACK="1"
 ```
 
-Asset mode is intentionally safety-first: `light` is the only active network asset path and uses controlled HTML fetching. `asset_mode=browser` remains a CLI-compatible value but never starts Playwright or browser navigation; it safely skips and records `browser_skip:network_unsafe`. `asset_mode=auto` runs the light pass first; its browser-fallback branch is also compatibility-only and safely skips browser navigation, recording `browser_skip:network_unsafe` when that branch is reached (or `browser_skip:auto_browser_fallback_disabled` when the fallback is disabled). Do not install Chromium or expect browser-based asset recovery. Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
+Asset mode is intentionally safety-first: `light` is the default active network path and uses controlled HTML fetching. `asset_mode=crawl4ai` is an explicit recovery mode that calls only an `http` loopback Crawl4AI service after light fetching leaves a visual slot empty; its candidates still pass the project's safe downloader and brand checks. `asset_mode=browser` remains a CLI-compatible value but never starts Playwright or browser navigation; it safely skips and records `browser_skip:network_unsafe`. `asset_mode=auto` runs the light pass first; its browser-fallback branch is also compatibility-only and safely skips browser navigation, recording `browser_skip:network_unsafe` when that branch is reached (or `browser_skip:auto_browser_fallback_disabled` when the fallback is disabled). Every buyer also has a hard `--per-buyer-seconds` limit (default 35 seconds), so a blocked site cannot keep the whole run waiting.
 
 Asset URL safety is enforced before every download and after every redirect: only `http` and `https` are accepted; `localhost`, loopback, private, link-local, reserved, multicast, unspecified, and other non-public DNS results are rejected; resolved public addresses are pinned for the curl request; and redirects stay on the validated site by default. DNS resolution has its own deadline, redirect chains are capped at 5 hops, and Python, curl, and inline data paths cap retained response data at 8 MiB. Oversized responses are rejected before they become retained assets.
 
 ## Buyer asset recovery
 
-Browser-based recovery is disabled. `scripts/recover_real_assets.py` and its PowerShell wrapper retain browser-related CLI values for compatibility, but a browser-mode retry is safety-skipped and records `browser_skip:network_unsafe`; do not install Chromium or use browser recovery to fetch assets. For missing assets, inspect `asset_fetch_report.json`, retry only the controlled light mode when appropriate, or leave the slot empty until a verified asset is available.
+Direct in-process browser recovery is disabled. `scripts/recover_real_assets.py` and its PowerShell wrapper retain browser-related CLI values for compatibility, but a browser-mode retry is safety-skipped and records `browser_skip:network_unsafe`. For missing assets, inspect `asset_fetch_report.json`, retry the controlled light mode, explicitly use the isolated `crawl4ai` service mode, or leave the slot empty until a verified asset is available.
+
+For difficult JavaScript-rendered sites, explicitly use `--asset-mode crawl4ai` after starting a local Crawl4AI service. The project sends only the verified official website seed to the loopback service, limits the rendered crawl to three same-site pages, and still downloads every returned candidate through the existing public-URL, redirect, size, image-dimension, and brand-matching checks. `BUYER_BOARD_CRAWL4AI_ENDPOINT` must remain an `http` loopback URL; `BUYER_BOARD_CRAWL4AI_TOKEN` is optional for authenticated service deployments. Crawl4AI is a desktop recovery option only and is not used by the Feishu/Aily package.
 
 ## Output artifacts
 
@@ -339,7 +341,7 @@ Depending on the workflow, the workspace may contain:
 - Public website asset fetching is best-effort and depends on local network permissions.
 - Logo selection rejects certification seals, government badges, banners, unrelated business units, subsidiary brands, and low-confidence brand mismatches; when the official page exposes an inline SVG mark, it is saved as the real vector asset rather than a screenshot crop.
 - Buyer-board procurement products are normalized to concrete purchasable equipment rather than umbrella categories. Product and bio table rows are sized from actual text length so short values do not retain oversized blank rows.
-- Browser/Playwright asset fetching is disabled. `auto` and `browser` remain compatibility values only; they never start browser network access and report the safety skip.
+- Direct Browser/Playwright asset fetching is disabled. `auto` and `browser` remain compatibility values only; the separate `crawl4ai` mode must be explicitly selected and must use a loopback service with egress protection.
 - `asset_fetch_report.json` records `logo_confidence`, `logo_source`, `logo_url`, rejected candidates, and timeout/network notes for manual review.
 - AI right-side visual fallback is opt-in and does not generate logos.
 - When no verified image is available, the workflow should clear risky stale placeholders rather than inventing fake brand assets.
