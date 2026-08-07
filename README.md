@@ -2,7 +2,7 @@
 
 Local-first, generic PPT template automation for turning an approved PPTX into a repeatable batch-production workflow. It decomposes template structure, connects imported data to layout rules, preserves approved visual styles, and produces consistent presentation files at scale.
 
-This repository is focused on **generic PPT template automation**. Use it for product catalogs, client proposals, company profiles, market reports, training materials, quote sheets, event lists, and any repeated PPT layout. Buyer Board and Buyer Briefing are optional bundled presets, not the limit of the skill.
+This repository is focused on **generic PPT template automation**. Use it for product catalogs, client proposals, company profiles, market reports, training materials, quote sheets, event lists, and any repeated PPT layout. It also provides optional cross-preset capabilities for natural-language copy and JavaScript-rendered website assets. Buyer Board and Buyer Briefing are bundled presets, not the limit of the skill.
 
 ## Product Overview
 
@@ -54,10 +54,17 @@ Use this skill when you want to turn any PPT/PPTX template into a repeatable bat
 2. Decompose slide structure, repeated pages, text boxes, tables, image placeholders, fixed elements, and styling.
 3. Generate or refine `layout-config.json`.
 4. Define the data contract, such as `records.json`, `buyers.json`, or `briefing-pages.json`.
-5. Fill text while preserving template fonts, colors, alignment, and run-level styles where needed.
-6. Replace approved image placeholders without touching fixed design elements.
-7. Export one or many PPT files.
-8. Verify slide count, required fields, missing records, encoding, and obvious layout regressions.
+5. Prepare or polish explicitly approved natural-language fields while keeping factual and machine fields frozen.
+6. Fill text while preserving template fonts, colors, alignment, and run-level styles where needed.
+7. Enrich approved image fields when needed, then replace image placeholders without touching fixed design elements.
+8. Export one or many PPT files.
+9. Verify slide count, required fields, missing records, encoding, assets, and obvious layout regressions.
+
+### Cross-preset capabilities
+
+Use `human-writing` as an optional content pass when a deck needs more natural Chinese, copy editing, lower AI-like phrasing, or batch copy polishing. Choose an explicit prose-field allowlist, keep the verified baseline separate, and validate the rewrite before PPT filling. Use the generic profile for ordinary records and the buyer profile for buyer customer copy.
+
+Use `scripts/fetch_record_assets.py` when arbitrary records have official websites and need Logos or page visuals. The command accepts custom URL, label, Logo, and visual field names and shares the bounded downloader, cache, image filters, and optional loopback Crawl4AI recovery mode with the buyer preset.
 
 ## Generic mapping and preflight contract
 
@@ -222,7 +229,7 @@ When the template requires a Logo and a right-side visual, both are delivery req
 
 See the [redacted buyer-board optimization reference](feishu-agent-skill/references/buyer-board-optimization-20260724.md) for the full acceptance and delivery checklist.
 
-For optional Chinese copy polishing, use `human-writing` only after research and acceptance are complete. Treat it as a prose post-processing layer rather than a research source: normally allow only `bio`, `summary`, or another explicitly named natural-language field, keep all identity/evidence/product/source fields frozen, and validate the before/after JSON with `scripts/validate_copy_rewrite.py` before generating the PPT. See [`docs/human-writing-copy-layer.md`](docs/human-writing-copy-layer.md). The external skill is optional and is not a runtime dependency of this repository.
+For optional Chinese copy polishing, use the cross-preset human-writing layer after source collection and verification. Generic records may allow fields such as `title`, `summary`, `description`, `body`, `caption`, or `speaker_notes`; buyer records should normally allow only `bio`, `summary`, or `intro` with the buyer profile. See [`docs/human-writing-copy-layer.md`](docs/human-writing-copy-layer.md).
 
 CLI research can also accept:
 
@@ -279,7 +286,7 @@ Install dependencies first:
 pip install -r requirements.txt
 ```
 
-Do not install Playwright or Chromium into the project for normal buyer-board asset discovery. The browser path is disabled for network safety; use the controlled light fetcher and inspect `asset_fetch_report.json` when an asset is unavailable. An optional `crawl4ai` recovery mode is available only through an explicitly configured local Crawl4AI service; see [`docs/crawl4ai-asset-recovery.md`](docs/crawl4ai-asset-recovery.md).
+Do not install Playwright or Chromium into the project for normal asset discovery. The browser path is disabled for network safety; use the controlled light fetcher and inspect the asset report when an asset is unavailable. An optional Crawl4AI recovery mode is available through an explicitly configured local loopback service; see [`docs/crawl4ai-asset-recovery.md`](docs/crawl4ai-asset-recovery.md).
 
 Set API keys only when using buyer research or AI visual fallback. The control console stores keys only in the current local process and never writes them to project files.
 
@@ -326,11 +333,11 @@ Asset mode is intentionally safety-first: `light` is the default active network 
 
 Asset URL safety is enforced before every download and after every redirect: only `http` and `https` are accepted; `localhost`, loopback, private, link-local, reserved, multicast, unspecified, and other non-public DNS results are rejected; resolved public addresses are pinned for the curl request; and redirects stay on the validated site by default. DNS resolution has its own deadline, redirect chains are capped at 5 hops, and Python, curl, and inline data paths cap retained response data at 8 MiB. Oversized responses are rejected before they become retained assets.
 
-## Buyer asset recovery
+## Website asset recovery
 
 Direct in-process browser recovery is disabled. `scripts/recover_real_assets.py` and its PowerShell wrapper retain browser-related CLI values for compatibility, but a browser-mode retry is safety-skipped and records `browser_skip:network_unsafe`. For missing assets, inspect `asset_fetch_report.json`, retry the controlled light mode, explicitly use the isolated `crawl4ai` service mode, or leave the slot empty until a verified asset is available.
 
-For difficult JavaScript-rendered sites, explicitly use `--asset-mode crawl4ai` after starting a local Crawl4AI service. The project sends only the verified official website seed to the loopback service, limits the rendered crawl to three same-site pages, and still downloads every returned candidate through the existing public-URL, redirect, size, image-dimension, and brand-matching checks. `BUYER_BOARD_CRAWL4AI_ENDPOINT` must remain an `http` loopback URL; `BUYER_BOARD_CRAWL4AI_TOKEN` is optional for authenticated service deployments. Crawl4AI is a desktop recovery option only and is not used by the Feishu/Aily package.
+For difficult JavaScript-rendered sites, explicitly use `--asset-mode crawl4ai` after starting a local Crawl4AI service. Generic records use `scripts/fetch_record_assets.py`; buyer boards may continue using `ppt-template-batch/scripts/fetch_buyer_assets.py`. Both paths send only the supplied official URL seed, limit the rendered crawl to three same-site pages, and revalidate every candidate. Use `PPT_BATCH_CRAWL4AI_ENDPOINT` and `PPT_BATCH_CRAWL4AI_TOKEN`; the older buyer-prefixed variables remain compatible.
 
 ## Output artifacts
 

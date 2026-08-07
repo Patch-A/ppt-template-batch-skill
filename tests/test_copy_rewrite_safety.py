@@ -6,7 +6,7 @@ import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "scripts" / "validate_copy_rewrite.py"
+SCRIPT_PATH = REPO_ROOT / "ppt-template-batch" / "scripts" / "validate_copy_rewrite.py"
 
 
 def load_module():
@@ -84,6 +84,29 @@ class CopyRewriteSafetyTests(unittest.TestCase):
         issues, _ = self.module.compare_payloads(before, after, frozenset({"bio"}), 2.0)
 
         self.assertTrue(any(item["code"] == "forbidden_customer_term" for item in issues))
+
+    def test_generic_profile_allows_identity_wording_to_change(self) -> None:
+        before = [{"name": "示例产品", "summary": "示例产品整理了2026年3项公开数据。"}]
+        after = [{"name": "示例产品", "summary": "这份材料整理了2026年3项公开数据。"}]
+
+        issues, changed = self.module.compare_payloads(
+            before, after, frozenset({"summary"}), 1.5, profile="generic"
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(changed, ["$[0].summary"])
+
+    def test_buyer_profile_keeps_identity_and_process_word_checks(self) -> None:
+        before = [{"name": "示例企业", "bio": "示例企业提供工业服务。"}]
+        after = [{"name": "示例企业", "bio": "这家公司已进入accepted候选池。"}]
+
+        issues, _ = self.module.compare_payloads(
+            before, after, frozenset({"bio"}), 2.0, profile="buyer"
+        )
+        codes = {item["code"] for item in issues}
+
+        self.assertIn("identity_anchor_removed", codes)
+        self.assertIn("forbidden_customer_term", codes)
 
 
 if __name__ == "__main__":

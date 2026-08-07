@@ -1,6 +1,6 @@
 ---
 name: ppt-template-batch
-description: General-purpose PowerPoint template decomposition and batch-generation workflow for PPT/PPTX files. Use when Codex needs to analyze any provided PPT template, extract reusable layout rules, create or refine layout-config mappings, batch-fill structured data into slides, preserve template text styles, replace approved image placeholders, duplicate or trim repeated slides, and export finished decks. Includes buyer-board and buyer-briefing presets for buyer research, company profiles, procurement categories, logos, website visuals, and 6-buyers-per-page briefing layouts, but the core skill is not limited to buyer-board projects.
+description: General-purpose PowerPoint template decomposition, content preparation, and batch-generation workflow for PPT/PPTX files. Use when Codex needs to analyze any PPT template, import or create structured content, write or rewrite natural-language slide copy, reduce AI-like phrasing, map layouts, batch-fill records, preserve template styles, recover approved website assets, duplicate or trim slides, and export finished decks. Includes optional human-writing copy assistance and Crawl4AI-assisted website asset recovery for all template families, plus buyer-board and buyer-briefing presets.
 ---
 
 # PPT Template Batch Workflow
@@ -111,7 +111,19 @@ Prefer explicit JSON input for repeatability:
 
 For new template families, test with a small dataset before scaling.
 
-### 5. Fill text first
+### 5. Prepare and polish content when needed
+
+Treat content preparation as a reusable layer available to every template family:
+
+- Use the user source material, verified research, or explicit brief as the source of truth. Do not let a writing pass invent claims, examples, numbers, dates, URLs, citations, product specifications, or customer identities.
+- When natural Chinese, copy editing, lower AI-like phrasing, or batch copy polishing is requested and human-writing is available, invoke it as an optional writing pass for explicitly approved prose fields such as titles, summaries, body copy, product descriptions, report commentary, speaker notes, and captions.
+- Keep IDs, names, categories, products, prices, dates, metrics, URLs, citations, source status, confidence, and workflow state outside the editable allowlist.
+- Freeze a verified content baseline, write polished content to a separate file, then validate it with scripts/validate_copy_rewrite.py before filling the PPT. Use the generic profile for ordinary presentations and the buyer profile for buyer records.
+- Keep copy within the target shape capacity. Short cards, tables, labels, and speaker notes need different length limits.
+
+Read `references/cross-preset-capabilities.md` for the reusable writing and web-asset workflows. These are main-skill capabilities, not buyer-board requirements.
+
+### 6. Fill text first
 
 Fill text before touching images.
 
@@ -134,12 +146,12 @@ Use `scripts/fill_ppt_from_records.py` for generic text, table, placeholder, ima
 
 Generic configs use `schema_version: 2`. Prefer `selector: {"name": "...", "role": "..."}` for stable shape matching; selectors resolve before `shape_id`/`shape_name` and the numeric `shape_index` compatibility fallback. Version 1 configs are normalized in memory. The shared generic report includes `ok`, `missing_required_fields`, `missing_assets`, `warnings`, `stale_template_text`, `capacity_warnings`, slide-count status, reopen status, and failed-record details. Outputs are written atomically only after the temporary PPTX can be reopened.
 
-### 6. Insert images only after text is stable
+### 7. Insert images only after text is stable
 
 Treat images as a separate pass:
 
 - replace only approved placeholder slots
-- Asset fetching should stay bounded: use the controlled light HTML path, extract official inline SVG marks when available, and enforce a per-buyer timeout. `asset_mode=crawl4ai` is an explicit desktop-only recovery path through a loopback Crawl4AI service; it may render at most three same-site pages and its returned candidates must still pass the existing safe downloader and exact-enterprise Logo checks. `asset_mode=auto` and `asset_mode=browser` remain accepted for CLI compatibility but never start Playwright or browser navigation; they safely skip the browser path and record `browser_skip:network_unsafe` when it is reached. Use `asset_fetch_report.json` to inspect misses instead of waiting indefinitely.
+- Asset fetching should stay bounded: use the controlled light HTML path for generic records, extract official inline SVG marks when available, and enforce a per-record timeout. `asset_mode=crawl4ai` is an explicit desktop recovery path through a loopback Crawl4AI service; it may render at most three same-site pages and its returned candidates must still pass public-URL checks, safe downloading, image filters, and brand or identity checks. `asset_mode=auto` and `asset_mode=browser` remain compatibility-only and never start Playwright or browser navigation. Use the asset report to inspect misses instead of waiting indefinitely.
 - Asset URLs must be `http` or `https`. Before each request, reject localhost and non-public IP literals or DNS results, including loopback, private, link-local, reserved, multicast, and unspecified addresses; validate the final URL of every redirect and keep redirects on the validated site by default. DNS resolution is bounded, curl pins the validated public address, redirects are capped at 5 hops, and Python, curl, and inline data reads are capped at 8 MiB.
 - Never accept a logo solely because its filename contains `logo`: reject certification seals, government badges, sale-notice marks, banners, and low-confidence brand mismatches. Prefer a verified official brand mark, and leave the Logo slot empty when confidence is insufficient.
 - Match the exact enterprise, not only the website domain: reject subsidiary and business-unit logos when the requested profile is for the parent company.
@@ -148,9 +160,9 @@ Treat images as a separate pass:
 - crop or pad right-side visuals before placement so they do not overflow
 - clear stale placeholder graphics when no verified asset is available
 
-For buyer-board asset discovery, use `scripts/fetch_buyer_assets.py --asset-mode light`, then use PowerPoint COM or the Python fallback image placer. For an explicitly configured local Crawl4AI service, use `--asset-mode crawl4ai` only as a recovery pass. Do not install Chromium into the project or expect `auto`/`browser` compatibility values to start browser network access; read `../docs/crawl4ai-asset-recovery.md` before enabling the recovery service.
+For generic records, use `scripts/fetch_record_assets.py` with `--url-field`, `--label-field`, `--logo-field`, and `--visual-field`. For buyer-board asset discovery, use `scripts/fetch_buyer_assets.py`; both paths share the same safe downloader and Crawl4AI recovery implementation. Do not install Chromium into the project or expect `auto`/`browser` compatibility values to start browser network access; read `references/cross-preset-capabilities.md` before enabling the recovery service.
 
-### 7. Use buyer presets only when relevant
+### 8. Use buyer presets only when relevant
 
 Buyer-board preset expects:
 
@@ -180,7 +192,7 @@ For multi-product research, `products` must be a buyer-specific one-to-three-ite
 
 For buyer-board tables, keep fixed identity rows unchanged and dynamically size the `products` and `bio` rows from actual line count. Preserve the template font and cell margins, update the table shape height, and do not move or overwrite the fixed header/footer. Replace titles and footer prompts inside their original shape/run; style overrides are opt-in only through `content.allow_style_overrides: true` for explicitly approved content fields.
 
-When the user requests less model-like Chinese copy or batch copy polishing and `$human-writing` is available, apply it only after research, qualification, and accepted-set selection. Use it as an optional post-processing pass on an explicit prose-field allowlist, normally `bio` for buyer-board or `summary`/`intro` for buyer briefing. Never let it rewrite names, countries, websites, products, evidence, source URLs, qualification fields, scores, uncertainty, or record order. Keep the verified JSON, write polished output separately, then run `../scripts/validate_copy_rewrite.py` before PPT generation. Read `../docs/human-writing-copy-layer.md` for the complete boundary.
+For buyer presets, apply the cross-preset copy layer only after research, qualification, and accepted-set selection. Use an explicit prose-field allowlist, normally `bio` for buyer-board or `summary`/`intro` for buyer briefing. Use `--profile buyer` so names, identity anchors, facts, evidence, qualification fields, scores, uncertainty, and record order remain protected.
 
 Use advanced research inputs when the user's target is specialized:
 
@@ -204,7 +216,7 @@ The filler clears unused slots on pages with fewer than 6 buyers and preserves t
 
 For the separate `yitu-quanjie` preset, run `yitu-quanjie/scripts/yitu_quanjie_replace.py --dry-run` to validate mapped shape names, table coordinates, text capacity, table height, and the output path. The command prints JSON only and never creates or overwrites the output. A normal run repeats validation before saving; its report uses `missing_shapes`, `shape_errors`, `table_errors`, and `overflows`.
 
-### 8. Diagnose runtime issues
+### 9. Diagnose runtime issues
 
 When a run behaves differently in WorkBuddy, Windows, or a sandboxed environment, run:
 
@@ -219,7 +231,7 @@ Check:
 - controlled asset-fetch mode and `browser_skip:network_unsafe` notes
 - model provider, Base URL, selected model, and API key visibility when research or AI visual fallback is needed
 
-### 9. Verify every output
+### 10. Verify every output
 
 After export, verify:
 
@@ -237,6 +249,8 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
 
 ## Files To Read
 
+- `references/cross-preset-capabilities.md`
+  Use when any template needs natural-language drafting or rewriting, generic website Logo or visual recovery, or the shared safety and validation boundaries for those capabilities.
 - `references/generic-ppt-batch-workflow.md`
   Use for arbitrary PPT template decomposition and batch replacement tasks.
 - `references/layout-config-schema.md`
@@ -259,6 +273,8 @@ For batch jobs, write a JSON report listing each output file, slide count, missi
   Use for compact buyer-briefing templates.
 - `scripts/fetch_buyer_assets.py`
   Use for buyer-board public logo and website visual sourcing.
+- `scripts/fetch_record_assets.py`
+  Use for generic records with configurable official-URL, label, Logo, and visual fields.
 - `scripts/apply_buyer_board_images.ps1`
   Use when PowerPoint COM is available for final image placement and preview export.
 - `scripts/apply_buyer_board_images_fallback.py`

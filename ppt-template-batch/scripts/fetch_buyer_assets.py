@@ -918,7 +918,11 @@ def discover_assets_for_domain_browser(
 
 
 def _resolve_crawl4ai_endpoint() -> str:
-    endpoint = get_env_var("BUYER_BOARD_CRAWL4AI_ENDPOINT") or CRAWL4AI_DEFAULT_ENDPOINT
+    endpoint = (
+        get_env_var("PPT_BATCH_CRAWL4AI_ENDPOINT")
+        or get_env_var("BUYER_BOARD_CRAWL4AI_ENDPOINT")
+        or CRAWL4AI_DEFAULT_ENDPOINT
+    )
     parsed = urlparse(endpoint)
     hostname = (parsed.hostname or "").lower().rstrip(".")
     if parsed.scheme.lower() != "http" or parsed.username or parsed.password:
@@ -959,7 +963,7 @@ def _post_crawl4ai(url: str, timeout_ms: int) -> dict[str, Any]:
         },
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    token = get_env_var("BUYER_BOARD_CRAWL4AI_TOKEN")
+    token = get_env_var("PPT_BATCH_CRAWL4AI_TOKEN") or get_env_var("BUYER_BOARD_CRAWL4AI_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(
