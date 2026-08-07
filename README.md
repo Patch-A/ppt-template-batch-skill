@@ -222,6 +222,8 @@ When the template requires a Logo and a right-side visual, both are delivery req
 
 See the [redacted buyer-board optimization reference](feishu-agent-skill/references/buyer-board-optimization-20260724.md) for the full acceptance and delivery checklist.
 
+For optional Chinese copy polishing, use `human-writing` only after research and acceptance are complete. Treat it as a prose post-processing layer rather than a research source: normally allow only `bio`, `summary`, or another explicitly named natural-language field, keep all identity/evidence/product/source fields frozen, and validate the before/after JSON with `scripts/validate_copy_rewrite.py` before generating the PPT. See [`docs/human-writing-copy-layer.md`](docs/human-writing-copy-layer.md). The external skill is optional and is not a runtime dependency of this repository.
+
 CLI research can also accept:
 
 ```bash
