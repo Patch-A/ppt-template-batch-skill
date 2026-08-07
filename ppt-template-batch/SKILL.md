@@ -173,12 +173,14 @@ Preserve qualification details in buyer records:
 - `evidence`
 - `source_urls`
 - `fit_score`, `demand_score`, `import_score`, `verification_score`, `total_score`
+- `confidence`
+- `risks`
 
 For multi-product research, `products` must be a buyer-specific one-to-three-item subset justified by `demand_scenarios` and `evidence`; never copy the full global procurement request into every buyer. Use equipment-level names such as `切菜机、切肉机`, not category-level phrases such as `商用厨房设备、食品加工设备、中央厨房系统`. If public evidence is insufficient, mark the field for manual verification instead of presenting a broad category as a confirmed purchase.
 
 For buyer-board tables, keep fixed identity rows unchanged and dynamically size the `products` and `bio` rows from actual line count. Preserve the template font and cell margins, update the table shape height, and do not move or overwrite the fixed header/footer. Replace titles and footer prompts inside their original shape/run; style overrides are opt-in only through `content.allow_style_overrides: true` for explicitly approved content fields.
-- `confidence`
-- `risks`
+
+When the user requests less model-like Chinese copy or batch copy polishing and `$human-writing` is available, apply it only after research, qualification, and accepted-set selection. Use it as an optional post-processing pass on an explicit prose-field allowlist, normally `bio` for buyer-board or `summary`/`intro` for buyer briefing. Never let it rewrite names, countries, websites, products, evidence, source URLs, qualification fields, scores, uncertainty, or record order. Keep the verified JSON, write polished output separately, then run `../scripts/validate_copy_rewrite.py` before PPT generation. Read `../docs/human-writing-copy-layer.md` for the complete boundary.
 
 Use advanced research inputs when the user's target is specialized:
 
