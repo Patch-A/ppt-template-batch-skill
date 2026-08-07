@@ -118,6 +118,8 @@ Feishu/Aily troubleshooting and compatibility fixes are recorded in [`feishu-age
 
 The 2026-07-17 Feishu buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md`](feishu-agent-skill/references/buyer-board-skill-optimization-20260717.md). It adds fixed-style protection for content titles and footer prompts, safe original-run replacement, explicit style-override opt-in, and model-selection guidance.
 
+The 2026-07-24 buyer-board optimization is documented in [`feishu-agent-skill/references/buyer-board-optimization-20260724.md`](feishu-agent-skill/references/buyer-board-optimization-20260724.md). The public version is redacted and covers the auditable candidate loop, country and exact-enterprise matching, accepted-set generation, internal/customer data separation, asset completeness gates, and final PPT rechecks.
+
 ### 一图全解 preset
 
 Use `yitu-quanjie/SKILL.md` when the user explicitly triggers **一图全解** and provides a country, product category, and PPTX template. This preset researches public 2026 market evidence, rewrites the cover, introduction, product-range table, four market advantages, and buyer-procurement section, while preserving the template layout and keeping replacement text within the original text capacity. It recursively handles grouped shapes and validates stale text, overflow, formatting, and table row height.
@@ -209,6 +211,16 @@ Buyer research stores qualification details alongside each buyer:
 - `fit_score`, `demand_score`, `import_score`, `verification_score`, `total_score`
 - `confidence`
 - `risks`
+
+#### Auditable buyer acceptance
+
+For a requested target of `N` buyers, the workflow first discovers a broader public candidate pool, then applies the target country as a hard filter, matches the exact enterprise, and verifies a concrete use, procurement, import, distribution, project, maintenance, or resale scenario. When the user supplies an internal buyer source, candidates are cross-checked before entering the final `accepted` set; rejected, duplicated, weak-match, country-mismatched, and pending records cannot enter the PPT.
+
+If the accepted set is short, the workflow searches only for the missing number of new candidates and repeats verification until the target is met or the remaining gap is explicitly blocked. Internal identifiers, source details, and exclusion reasons stay in a separate verification table and never appear in customer-facing copy.
+
+When the template requires a Logo and a right-side visual, both are delivery requirements. Use a verified enterprise Logo and a separate product, facility, project, or application image. Replace candidates with incomplete assets when possible; otherwise report the block instead of fabricating a Logo or presenting an incomplete deck. The exported PPT is reopened and checked against the accepted set, country, text, forbidden internal terms, image count, geometry, row heights, and fixed elements.
+
+See the [redacted buyer-board optimization reference](feishu-agent-skill/references/buyer-board-optimization-20260724.md) for the full acceptance and delivery checklist.
 
 CLI research can also accept:
 

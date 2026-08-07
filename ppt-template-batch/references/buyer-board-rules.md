@@ -70,6 +70,16 @@ Research rules:
 5. Leave image paths empty when no verified asset is available.
 6. Write one to three equipment-level procurement products. Do not use umbrella categories such as `商用厨房设备`、`食品加工设备` or `中央厨房系统` when the actual requirement can be expressed as `切菜机`、`切肉机`、`绞肉机`、`和面机` or another concrete machine.
 
+## Auditable buyer acceptance
+
+- Build a broader public candidate pool before shortlisting.
+- Apply the requested country as a hard filter; exceptions require evidence of a local branch, agency, importer, or local purchasing entity.
+- Match the exact enterprise using domain, distinctive name or brand tokens, company context, location, and business evidence. Generic country, industry, and product words cannot prove identity alone.
+- If an internal buyer source is supplied, cross-check every candidate and generate the PPT only from the final `accepted` set. Do not invent internal identifiers.
+- Replenish only the gap after rejected, duplicate, weak, or country-mismatched candidates are removed. Stop with a blocked or partial result when the gap cannot be filled honestly.
+
+Keep discovery and verification details in a separate internal table. Customer-facing fields must not include internal identifiers, library names, candidate/match/exclusion language, or scraping-failure notes.
+
 ## Dynamic table rows
 
 - Keep company, country, and website rows at the template height.
@@ -123,6 +133,7 @@ If no asset is available:
 
 - remove the placeholder image
 - do not leave the old template graphic on the slide
+- if the template requires a complete asset pair, replace the candidate with an accepted record that has reliable assets or block the delivery; never fabricate a Logo
 
 ## Validation checklist
 
@@ -136,6 +147,8 @@ If no asset is available:
 - is the right-side image visually filled and balanced when present
 - were placeholder graphics removed when no image asset was available
 - was the text-only draft used as input, rather than a previously exported final deck
+- does the final PPT enterprise list exactly equal the accepted verification set
+- does the final PPT reopen and pass the country, forbidden-term, image-count, geometry, and fixed-element checks
 
 ## Regression safeguards
 
