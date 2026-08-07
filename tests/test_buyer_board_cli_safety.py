@@ -22,6 +22,19 @@ def load_script_module(name: str, path: Path):
 
 
 class BuyerBoardCliSafetyTests(unittest.TestCase):
+    def test_crawl4ai_mode_is_not_downgraded_by_cli_wrappers(self) -> None:
+        recovery = load_script_module(
+            "recover_real_assets_crawl4ai_mode_under_test",
+            REPO_ROOT / "scripts" / "recover_real_assets.py",
+        )
+        pipeline = load_script_module(
+            "run_buyer_board_pipeline_crawl4ai_mode_under_test",
+            REPO_ROOT / "scripts" / "run_buyer_board_pipeline.py",
+        )
+
+        self.assertEqual(recovery.resolve_safe_asset_mode("crawl4ai"), "crawl4ai")
+        self.assertEqual(pipeline.resolve_safe_asset_mode("crawl4ai"), "crawl4ai")
+
     def test_help_does_not_make_unsafe_browser_claims(self) -> None:
         scripts = (
             REPO_ROOT / "scripts" / "recover_real_assets.py",

@@ -421,6 +421,162 @@ class AssetFetchingRegressionTests(unittest.TestCase):
         self.assertEqual(visuals, [])
         self.assertIn("browser_skip:network_unsafe", notes)
 
+    def test_crawl4ai_endpoint_is_restricted_to_loopback_http(self):
+        invalid_endpoints = (
+            "https://127.0.0.1:11235/crawl",
+            "http://crawl.example.com:11235/crawl",
+            "http://user:pass@127.0.0.1:11235/crawl",
+            "http://127.0.0.1/crawl",
+        )
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint), patch.object(
+                self.fetch_buyer_assets,
+                "get_env_var",
+                return_value=endpoint,
+            ):
+                with self.assertRaises(ValueError):
+                    self.fetch_buyer_assets._resolve_crawl4ai_endpoint()
+
+    def test_crawl4ai_request_disables_proxies_and_redirects(self):
+        response_payload = json.dumps({"results": []}).encode("utf-8")
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self, _limit):
+                return response_payload
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        def fake_build_opener(*handlers):
+            captured["handlers"] = handlers
+            return FakeOpener()
+
+        def fake_env(name):
+            if name == "BUYER_BOARD_CRAWL4AI_TOKEN":
+                return "secret-token"
+            return ""
+
+        with patch.object(self.fetch_buyer_assets, "build_opener", side_effect=fake_build_opener), patch.object(
+            self.fetch_buyer_assets,
+            "get_env_var",
+            side_effect=fake_env,
+        ):
+            result = self.fetch_buyer_assets._post_crawl4ai("https://acme.com", 4000)
+
+        self.assertEqual(result, {"results": []})
+        self.assertTrue(any(isinstance(item, self.fetch_buyer_assets.ProxyHandler) for item in captured["handlers"]))
+        self.assertTrue(any(isinstance(item, self.fetch_buyer_assets._NoRedirectHandler) for item in captured["handlers"]))
+        self.assertEqual(captured["request"].full_url, "http://127.0.0.1:11235/crawl")
+        self.assertEqual(captured["request"].get_header("Authorization"), "Bearer secret-token")
+        self.assertLessEqual(captured["timeout"], 4.0)
+
+    def test_crawl4ai_media_candidates_support_extensionless_urls(self):
+        logos, visuals, links = self.fetch_buyer_assets._crawl4ai_candidates(
+            "https://acme.com",
+            {
+                "html": "<html><body></body></html>",
+                "media": {
+                    "images": [
+                        {"src": "/media/acme-logo", "alt": "Acme logo"},
+                        {"src": "/media/conveyor", "alt": "Industrial conveyor product"},
+                    ]
+                },
+                "links": {"internal": []},
+            },
+        )
+
+        ranked = self.fetch_buyer_assets.rank_logo_candidates(logos, "Acme", "acme.com")
+
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0].src, "https://acme.com/media/acme-logo")
+        self.assertEqual(len(visuals), 1)
+        self.assertEqual(visuals[0].src, "https://acme.com/media/conveyor")
+        self.assertEqual(links, [])
+
+    def test_crawl4ai_mode_runs_only_as_light_fallback_and_records_audit_notes(self):
+        payload = {
+            "success": True,
+            "results": [
+                {
+                    "url": "https://acme.com",
+                    "success": True,
+                    "html": "<html><body></body></html>",
+                    "media": {
+                        "images": [
+                            {"src": "/media/acme-logo", "alt": "Acme logo"},
+                            {"src": "/media/conveyor", "alt": "Industrial conveyor product"},
+                        ]
+                    },
+                    "links": {"internal": []},
+                }
+            ],
+        }
+        with patch.object(
+            self.fetch_buyer_assets,
+            "discover_assets_for_domain_light",
+            return_value=("https://acme.com", [], [], ["light:empty"]),
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "validate_asset_url",
+            return_value=(True, ""),
+        ), patch.object(
+            self.fetch_buyer_assets,
+            "_post_crawl4ai",
+            return_value=payload,
+        ) as post:
+            final_url, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain(
+                "acme.com",
+                "Acme",
+                "crawl4ai",
+                4000,
+            )
+
+        post.assert_called_once_with("https://acme.com", 4000)
+        self.assertEqual(final_url, "https://acme.com")
+        self.assertEqual(len(logos), 1)
+        self.assertEqual(len(visuals), 1)
+        self.assertIn("crawl4ai:used", notes)
+        self.assertIn("crawl4ai:candidates:2", notes)
+
+    def test_crawl4ai_mode_skips_service_when_light_fetch_is_complete(self):
+        logo = self.AssetCandidate(
+            src="https://acme.com/acme-logo.svg",
+            page="https://acme.com",
+            kind="image",
+            alt="Acme logo",
+        )
+        visual = self.AssetCandidate(
+            src="https://acme.com/product.jpg",
+            page="https://acme.com",
+            kind="image",
+        )
+        with patch.object(
+            self.fetch_buyer_assets,
+            "discover_assets_for_domain_light",
+            return_value=("https://acme.com", [logo], [visual], ["light:complete"]),
+        ), patch.object(self.fetch_buyer_assets, "_post_crawl4ai") as post:
+            _, logos, visuals, notes = self.fetch_buyer_assets.discover_assets_for_domain(
+                "acme.com",
+                "Acme",
+                "crawl4ai",
+                4000,
+            )
+
+        post.assert_not_called()
+        self.assertEqual(logos, [logo])
+        self.assertEqual(visuals, [visual])
+        self.assertIn("crawl4ai:skip:light_complete", notes)
+
     def test_asset_mode_help_describes_browser_network_safety_skip(self):
         stdout = StringIO()
         with patch.object(sys, "argv", ["fetch_buyer_assets.py", "--help"]), patch.object(sys, "stdout", stdout):

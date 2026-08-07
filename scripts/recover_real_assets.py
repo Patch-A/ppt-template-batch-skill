@@ -176,19 +176,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preview-dir", help="Optional preview output directory")
     parser.add_argument(
         "--asset-mode",
-        choices=("light", "auto", "browser"),
+        choices=("light", "auto", "browser", "crawl4ai"),
         default="auto",
         help=(
-            "Asset fetch mode. light uses bounded HTML fetching; auto and browser are "
-            "compatibility modes that skip unsafe browser-network access and record "
-            "browser_skip:network_unsafe."
+            "Asset fetch mode. light uses bounded HTML fetching; crawl4ai uses an explicitly "
+            "configured local Crawl4AI service; auto and browser remain compatibility modes "
+            "that skip unsafe browser-network access and record browser_skip:network_unsafe."
         ),
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=18000,
-        help="Compatibility timeout retained for the browser option; unsafe browser-network access is skipped",
+        help="Timeout for the optional Crawl4AI recovery service; browser compatibility mode remains safety-skipped",
     )
     parser.add_argument(
         "--enable-ai-visual-fallback",

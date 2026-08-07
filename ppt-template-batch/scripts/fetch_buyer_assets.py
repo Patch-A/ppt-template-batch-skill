@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, unquote_to_bytes, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from PIL import Image
 
@@ -107,10 +109,20 @@ FETCH_TIMEOUT_SECONDS = 8
 MAX_REDIRECT_HOPS = 5
 ASSET_LOGIC_VERSION = 4
 LOGO_MIN_SCORE = 10
+CRAWL4AI_DEFAULT_ENDPOINT = "http://127.0.0.1:11235/crawl"
+CRAWL4AI_MAX_PAGES = 3
+CRAWL4AI_MAX_MEDIA_CANDIDATES = 80
+CRAWL4AI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+CRAWL4AI_MODE = "crawl4ai"
 FETCH_DEADLINE: float | None = None
 _DNS_REQUEST_QUEUE = queue.Queue(maxsize=1)
 _DNS_WORKER: threading.Thread | None = None
 _DNS_WORKER_LOCK = threading.Lock()
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 @dataclass
@@ -691,7 +703,7 @@ def rank_logo_candidates(candidates: list[AssetCandidate], buyer_name: str, doma
         [
             item
             for item in dedupe_candidates(candidates)
-            if has_supported_extension(item.src)
+            if (has_supported_extension(item.src) or item.kind.startswith("crawl4ai-"))
             and not logo_candidate_rejection_reason(item, buyer_name, domain)
             and item.score >= LOGO_MIN_SCORE
         ],
@@ -905,6 +917,204 @@ def discover_assets_for_domain_browser(
     return None, [], [], ["browser_skip:network_unsafe"]
 
 
+def _resolve_crawl4ai_endpoint() -> str:
+    endpoint = get_env_var("BUYER_BOARD_CRAWL4AI_ENDPOINT") or CRAWL4AI_DEFAULT_ENDPOINT
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "http" or parsed.username or parsed.password:
+        raise ValueError("crawl4ai_endpoint_must_be_loopback_http")
+    if hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("crawl4ai_endpoint_must_be_loopback_http")
+    if parsed.port is None or not (1 <= parsed.port <= 65535):
+        raise ValueError("crawl4ai_endpoint_invalid_port")
+    return endpoint.rstrip("/")
+
+
+def _crawl4ai_timeout_seconds(timeout_ms: int) -> float:
+    requested = max(1.0, min(float(timeout_ms) / 1000.0, 20.0))
+    if FETCH_DEADLINE is None:
+        return requested
+    remaining = FETCH_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("asset_fetch_per_buyer_timeout")
+    return min(requested, remaining)
+
+
+def _post_crawl4ai(url: str, timeout_ms: int) -> dict[str, Any]:
+    endpoint = _resolve_crawl4ai_endpoint()
+    page_timeout_ms = max(2000, min(int(timeout_ms), 12000))
+    payload = {
+        "urls": [url],
+        "browser_config": {"headless": True, "verbose": False},
+        "crawler_config": {
+            "cache_mode": "bypass",
+            "page_timeout": page_timeout_ms,
+            "wait_for_images": True,
+            "wait_for_timeout": min(1500, max(300, page_timeout_ms // 8)),
+            "scan_full_page": True,
+            "scroll_delay": 0.25,
+            "max_scroll_steps": 3,
+            "exclude_external_links": True,
+            "exclude_social_media_links": True,
+        },
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    token = get_env_var("BUYER_BOARD_CRAWL4AI_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
+    try:
+        with opener.open(request, timeout=_crawl4ai_timeout_seconds(timeout_ms)) as response:
+            body = response.read(CRAWL4AI_MAX_RESPONSE_BYTES + 1)
+    except HTTPError as exc:
+        raise RuntimeError(f"crawl4ai_http_{exc.code}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"crawl4ai_unavailable:{exc.reason}") from exc
+    if len(body) > CRAWL4AI_MAX_RESPONSE_BYTES:
+        raise ValueError("crawl4ai_response_too_large")
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("crawl4ai_invalid_json") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("crawl4ai_invalid_response")
+    return parsed
+
+
+def _crawl4ai_result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    results = payload.get("results")
+    if isinstance(results, list):
+        return [item for item in results if isinstance(item, dict)]
+    if isinstance(payload.get("url"), str):
+        return [payload]
+    return []
+
+
+def _crawl4ai_candidates(
+    page_url: str,
+    result: dict[str, Any],
+) -> tuple[list[AssetCandidate], list[AssetCandidate], list[str]]:
+    logos, visuals, _ = parse_page(
+        page_url,
+        str(result.get("html") or ""),
+        origin="crawl4ai_official_page",
+    )
+    media = result.get("media")
+    images = media.get("images", []) if isinstance(media, dict) else []
+    if not isinstance(images, list):
+        images = []
+    for item in images[:CRAWL4AI_MAX_MEDIA_CANDIDATES]:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("src") or item.get("url") or "").strip()
+        if not src:
+            continue
+        candidate = AssetCandidate(
+            src=urljoin(page_url, src),
+            page=page_url,
+            kind="crawl4ai-image",
+            alt=str(item.get("alt") or ""),
+            cls=str(item.get("desc") or item.get("description") or ""),
+            origin="crawl4ai_official_page",
+        )
+        if any(hint in logo_evidence_target(candidate) for hint in LOGO_HINTS):
+            logos.append(candidate)
+        else:
+            visuals.append(candidate)
+    links: list[str] = []
+    raw_links = result.get("links")
+    internal_links = raw_links.get("internal", []) if isinstance(raw_links, dict) else []
+    if isinstance(internal_links, list):
+        for item in internal_links:
+            href = item.get("href") if isinstance(item, dict) else item
+            if not href:
+                continue
+            full = urljoin(page_url, str(href))
+            text_hint = item.get("text", "") if isinstance(item, dict) else ""
+            if same_host(page_url, full) and any(
+                hint in f"{full} {text_hint}".lower() for hint in PAGE_HINTS
+            ):
+                links.append(full)
+    return logos, visuals, dedupe(links)[:MAX_PAGE_CANDIDATES]
+
+
+def discover_assets_for_domain_crawl4ai(
+    domain: str,
+    buyer_name: str,
+    timeout_ms: int,
+) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
+    final_url, light_logos, light_visuals, notes = discover_assets_for_domain_light(domain, buyer_name)
+    if light_logos and light_visuals:
+        notes.append("crawl4ai:skip:light_complete")
+        return final_url, light_logos, light_visuals, notes
+
+    base_url = candidate_base_urls(domain)[0]
+    valid, reason = validate_asset_url(base_url)
+    if not valid:
+        notes.append(f"crawl4ai:seed_rejected:{reason}")
+        return final_url, light_logos, light_visuals, notes
+
+    logos = list(light_logos)
+    visuals = list(light_visuals)
+    pages = [base_url]
+    visited: set[str] = set()
+    while pages and len(visited) < CRAWL4AI_MAX_PAGES and (not logos or not visuals):
+        if FETCH_DEADLINE is not None and time.monotonic() >= FETCH_DEADLINE:
+            notes.append("crawl4ai:timeout:buyer_budget")
+            break
+        page_url = pages.pop(0)
+        if page_url in visited:
+            continue
+        visited.add(page_url)
+        try:
+            payload = _post_crawl4ai(page_url, timeout_ms)
+        except Exception as exc:
+            notes.append(f"crawl4ai:error:{exc}")
+            break
+        results = _crawl4ai_result_items(payload)
+        if not results:
+            notes.append("crawl4ai:error:empty_results")
+            break
+        result = results[0]
+        if not result.get("success", True):
+            notes.append(f"crawl4ai:error:{result.get('error_message') or 'crawl_failed'}")
+            continue
+        rendered_url = str(result.get("url") or page_url)
+        if not same_host(base_url, rendered_url):
+            notes.append("crawl4ai:redirect_rejected:different_host")
+            continue
+        page_logos, page_visuals, page_links = _crawl4ai_candidates(rendered_url, result)
+        logos.extend(page_logos)
+        visuals.extend(page_visuals)
+        notes.append(f"crawl4ai:page:{rendered_url}")
+        notes.append(f"crawl4ai:candidates:{len(page_logos) + len(page_visuals)}")
+        for link in page_links:
+            if link not in visited and link not in pages and len(visited) + len(pages) < CRAWL4AI_MAX_PAGES:
+                pages.append(link)
+
+    if any(note.startswith("crawl4ai:page:") for note in notes):
+        notes.append("crawl4ai:used")
+    ranked_logos = rank_logo_candidates(logos, buyer_name, domain)
+    for item in visuals:
+        item.score = score_visual_candidate(item)
+    ranked_visuals = sorted(
+        [
+            item
+            for item in dedupe_candidates(visuals)
+            if has_supported_extension(item.src) or item.kind.startswith("crawl4ai-")
+        ],
+        key=lambda item: item.score,
+        reverse=True,
+    )
+    return final_url or base_url, ranked_logos, ranked_visuals, notes
+
+
 def inspect_downloaded_asset(path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {"bytes": path.stat().st_size}
     suffix = path.suffix.lower()
@@ -986,6 +1196,8 @@ def discover_assets_for_domain(
     asset_mode: str,
     browser_timeout_ms: int,
 ) -> tuple[str | None, list[AssetCandidate], list[AssetCandidate], list[str]]:
+    if asset_mode == CRAWL4AI_MODE:
+        return discover_assets_for_domain_crawl4ai(domain, buyer_name, browser_timeout_ms)
     if asset_mode == "browser":
         return discover_assets_for_domain_browser(domain, buyer_name, browser_timeout_ms)
 
@@ -1098,6 +1310,10 @@ def process_buyer(
         "site_source": "",
         "asset_mode": asset_mode,
         "asset_logic_version": ASSET_LOGIC_VERSION,
+        "crawl4ai_used": False,
+        "crawl4ai_pages": [],
+        "crawl4ai_candidate_count": 0,
+        "crawl4ai_error": "",
         "notes": [],
     }
     if not website:
@@ -1141,6 +1357,24 @@ def process_buyer(
     site_image_path = str(cached.get("site_image_path", "")) if cached_site_present else ""
     site_source = str(cached.get("site_source", "")) if cached_site_present else ""
     trace = list(notes)
+    report["crawl4ai_used"] = "crawl4ai:used" in trace
+    report["crawl4ai_pages"] = [
+        note.removeprefix("crawl4ai:page:")
+        for note in trace
+        if note.startswith("crawl4ai:page:")
+    ]
+    report["crawl4ai_candidate_count"] = sum(
+        int(note.removeprefix("crawl4ai:candidates:"))
+        for note in trace
+        if note.startswith("crawl4ai:candidates:")
+        and note.removeprefix("crawl4ai:candidates:").isdigit()
+    )
+    crawl_errors = [
+        note.removeprefix("crawl4ai:error:")
+        for note in trace
+        if note.startswith("crawl4ai:error:")
+    ]
+    report["crawl4ai_error"] = crawl_errors[0] if crawl_errors else ""
     if cached_logo_present:
         trace.append("cache_hit:logo")
         report["logo_hit"] = True
@@ -1243,15 +1477,15 @@ def main() -> int:
     parser.add_argument("--enable-ai-visual-fallback", action="store_true", help="generate AI site visual when public assets are unavailable")
     parser.add_argument(
         "--asset-mode",
-        choices=("light", "auto", "browser"),
+        choices=("light", "auto", "browser", "crawl4ai"),
         default="light",
-        help="light uses controlled HTML fetching; browser and auto browser fallback are skipped for network safety",
+        help="light uses controlled HTML fetching; crawl4ai uses an explicitly configured local Crawl4AI service; browser and auto browser fallback are skipped for network safety and retained for CLI compatibility",
     )
     parser.add_argument(
         "--browser-timeout-ms",
         type=int,
         default=8000,
-        help="retained for CLI compatibility; browser navigation is skipped for network safety",
+        help="timeout for the optional Crawl4AI recovery service; browser compatibility mode remains safety-skipped",
     )
     parser.add_argument(
         "--fetch-timeout-seconds",
